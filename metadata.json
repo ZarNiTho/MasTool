@@ -1,0 +1,6 @@
+{
+  "name": "FastDeck OTG",
+  "description": "Mobile service utility for USB OTG ADB and Fastboot diagnostics, Android 10-16 dynamic partition management, and firmware image/script flashing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

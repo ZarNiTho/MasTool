@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">FastDeck OTG</string>
+    <string name="subtitle_service_suite">Android 10–16 ADB &amp; Fastboot Service Suite</string>
+    <string name="tab_dashboard">Port &amp; Device</string>
+    <string name="tab_adb_ops">ADB Service</string>
+    <string name="tab_fastboot_flash">Fastboot Flash</string>
+    <string name="tab_cmd_hub">Cmd Library</string>
+    <string name="tab_console">Live Console</string>
+    <string name="scan_ports">Scan USB Ports</string>
+    <string name="request_usb_perm">Grant USB Permission</string>
+    <string name="toggle_theme">Toggle Light/Dark Theme</string>
+    <string name="pick_flash_file">Select Flash File (.img / .bat / .sh / UPDATE.APP / .zip)</string>
+    <string name="clear_logs">Clear Console</string>
+    <string name="run_command">Execute</string>
+</resources>
