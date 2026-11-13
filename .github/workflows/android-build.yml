@@ -16,6 +16,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build FastDeck OTG (APK & AAB)
@@ -32,16 +35,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Configure Pre-installed Android SDK & Accept Licenses
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
 
-      - name: Accept Android SDK Licenses
-        run: yes | sdkmanager --licenses > /dev/null || true
+          # Locate the newest installed sdkmanager binary on the Ubuntu runner
+          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f | sort -V | tail -n 1)
+          if [ -z "$SDKMANAGER" ]; then
+            echo "Error: sdkmanager not found in $SDK_ROOT/cmdline-tools"
+            exit 1
+          fi
+
+          CMDLINE_BIN_DIR=$(dirname "$SDKMANAGER")
+          echo "$CMDLINE_BIN_DIR" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
+
+          echo "Using sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
 
       - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
@@ -88,7 +105,7 @@ jobs:
       - name: Build Debug APK, Release APK & Release Bundle (AAB)
         run: gradle :app:assembleDebug :app:assembleRelease :app:bundleRelease
 
-      - name: Upload Debug APK Artifact (v4)
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FastDeck-OTG-Debug-APK
@@ -96,7 +113,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Upload Signed Release APK Artifact (v4)
+      - name: Upload Signed Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: FastDeck-OTG-Release-APK
@@ -104,7 +121,7 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-      - name: Upload Signed Release App Bundle AAB (v4)
+      - name: Upload Signed Release App Bundle (AAB)
         uses: actions/upload-artifact@v4
         with:
           name: FastDeck-OTG-Release-AAB
