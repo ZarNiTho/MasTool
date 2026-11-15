@@ -31,11 +31,12 @@ import java.util.concurrent.atomic.AtomicLong
 data class ServiceUiState(
     val themeMode: ThemeMode = ThemeMode.DARK,
     val screenMode: ToolScreenMode = ToolScreenMode.FASTBOOT_ONECLICK,
+    val showAboutDialog: Boolean = false,
     val usbPorts: List<UsbPortInfo> = emptyList(),
     val selectedPortName: String? = null,
     val selectedBrand: ServiceBrand = ServiceBrand.UNIVERSAL,
     val selectedActionGroup: ActionGroup = ActionGroup.ALL,
-    val selectedAction: ServiceActionItem = CommandRepository.allActions.first(),
+    val selectedAction: ServiceActionItem = CommandRepository.allActions.first { !it.isAdb },
     val selectedPartition: String = CommandRepository.supportedPartitions.first(),
     val disableVerity: Boolean = true,
     val autoReboot: Boolean = true,
@@ -45,7 +46,7 @@ data class ServiceUiState(
     val isBusy: Boolean = false,
     val statusBarText: String = "Direct USB OTG Host Ready",
     val progressPercent: Float = 0f,
-    val rawCommandInput: String = "fastboot getvar all",
+    val rawCommandInput: String = "",
     val consoleLogs: List<ConsoleLogEntry> = emptyList()
 )
 
@@ -66,31 +67,22 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         scanUsbPorts()
     }
 
+    /**
+     * Strictly separates Fastboot actions (!isAdb) and ADB actions (isAdb) by tab,
+     * and filters cleanly by the selected Brand so the scroll box is never cluttered.
+     */
     fun getAvailableActions(): List<ServiceActionItem> {
         val state = _uiState.value
         val modeFiltered = when (state.screenMode) {
             ToolScreenMode.ADB_ONECLICK -> CommandRepository.allActions.filter { it.isAdb }
-            else -> CommandRepository.allActions
+            else -> CommandRepository.allActions.filter { !it.isAdb }
         }
-        val brandFiltered = if (state.selectedBrand == ServiceBrand.UNIVERSAL) {
-            modeFiltered
-        } else {
-            val brandSpecific = modeFiltered.filter { it.brand == state.selectedBrand }
-            val universal = modeFiltered.filter { it.brand == ServiceBrand.UNIVERSAL }
-            brandSpecific + universal
-        }
-        val groupFiltered = when (state.selectedActionGroup) {
-            ActionGroup.ALL -> brandFiltered
-            ActionGroup.BRAND_OEM -> {
-                if (state.selectedBrand == ServiceBrand.UNIVERSAL) {
-                    CommandRepository.allActions.filter { it.group == ActionGroup.BRAND_OEM }
-                } else {
-                    CommandRepository.allActions.filter { it.brand == state.selectedBrand }
-                }
-            }
-            else -> brandFiltered.filter { it.group == state.selectedActionGroup }
-        }
-        return groupFiltered.ifEmpty { modeFiltered }
+        val brandFiltered = modeFiltered.filter { it.brand == state.selectedBrand }
+        return brandFiltered.ifEmpty { modeFiltered }
+    }
+
+    fun setShowAboutDialog(show: Boolean) {
+        _uiState.update { it.copy(showAboutDialog = show) }
     }
 
     fun toggleTheme() {
@@ -106,10 +98,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         if (actions.isNotEmpty() && _uiState.value.selectedAction !in actions) {
             val first = actions.first()
             _uiState.update {
-                it.copy(
-                    selectedAction = first,
-                    rawCommandInput = first.command
-                )
+                it.copy(selectedAction = first)
             }
         }
         appendLog(
@@ -122,12 +111,11 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
     fun setBrand(brand: ServiceBrand) {
         _uiState.update { it.copy(selectedBrand = brand) }
         val available = getAvailableActions()
-        val firstMatch = available.firstOrNull { it.brand == brand } ?: available.first()
-        _uiState.update {
-            it.copy(
-                selectedAction = firstMatch,
-                rawCommandInput = firstMatch.command
-            )
+        if (available.isNotEmpty()) {
+            val firstMatch = available.first()
+            _uiState.update {
+                it.copy(selectedAction = firstMatch)
+            }
         }
         appendLog("BRAND", "Selected Brand: ${brand.displayName}", LogLevel.INFO)
     }
@@ -135,21 +123,16 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
     fun setActionGroup(group: ActionGroup) {
         _uiState.update { it.copy(selectedActionGroup = group) }
         val available = getAvailableActions()
-        val firstMatch = available.first()
-        _uiState.update {
-            it.copy(
-                selectedAction = firstMatch,
-                rawCommandInput = firstMatch.command
-            )
+        if (available.isNotEmpty()) {
+            _uiState.update {
+                it.copy(selectedAction = available.first())
+            }
         }
     }
 
     fun setSelectedAction(action: ServiceActionItem) {
         _uiState.update {
-            it.copy(
-                selectedAction = action,
-                rawCommandInput = action.command
-            )
+            it.copy(selectedAction = action)
         }
     }
 
@@ -296,9 +279,21 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         when (state.screenMode) {
             ToolScreenMode.FASTBOOT_FLASH -> executeDirectUsbFlash()
-            ToolScreenMode.CMD_TERMINAL -> executeCommand(state.rawCommandInput)
+            ToolScreenMode.CMD_TERMINAL -> {
+                val input = state.rawCommandInput.trim()
+                if (input.isEmpty()) {
+                    appendLog("TERM", "Enter a command in the terminal box first.", LogLevel.WARN)
+                } else {
+                    executeCommand(input)
+                }
+            }
             ToolScreenMode.FASTBOOT_ONECLICK, ToolScreenMode.ADB_ONECLICK -> {
-                executeCommand(state.selectedAction.command)
+                appendLog(
+                    tag = "START",
+                    message = "[${state.selectedBrand.shortTag}] ${state.selectedAction.title}",
+                    level = LogLevel.CMD
+                )
+                executeCommand(state.selectedAction.command, logRawCommand = false)
             }
         }
     }
@@ -341,7 +336,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                 enabledSteps.forEachIndexed { idx, step ->
                     appendLog(
                         tag = "FLASH",
-                        message = "[${idx + 1}/${enabledSteps.size}] ${step.command}",
+                        message = "[${idx + 1}/${enabledSteps.size}] Flashing ${step.targetPartition}...",
                         level = LogLevel.CMD
                     )
                     if (step.dataSize > 0L) {
@@ -374,7 +369,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                 }
 
                 if (state.autoReboot) {
-                    appendLog("CMD", "fastboot reboot", LogLevel.CMD)
+                    appendLog("CMD", "Rebooting device to system...", LogLevel.CMD)
                     usbController.executeFastbootWireCommands(portName, listOf("reboot")) { msg, lvl ->
                         appendLog("USB", msg, lvl)
                     }
@@ -391,7 +386,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun executeCommand(rawCmd: String) {
+    fun executeCommand(rawCmd: String, logRawCommand: Boolean = true) {
         if (_uiState.value.isBusy) {
             appendLog("BUSY", "Another command is currently running.", LogLevel.WARN)
             return
@@ -403,11 +398,13 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    statusBarText = "Executing: $cmd",
+                    statusBarText = "Executing service operation...",
                     progressPercent = 0f
                 )
             }
-            appendLog("CMD", "[${_uiState.value.selectedBrand.shortTag}] > $cmd", LogLevel.CMD)
+            if (logRawCommand) {
+                appendLog("CMD", "> $cmd", LogLevel.CMD)
+            }
 
             val state = _uiState.value
             val portName = state.selectedPortName
@@ -422,7 +419,6 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                                 level = LogLevel.FAIL
                             )
                         } else {
-                            // Check if user typed `fastboot flash <partition>` while a file is loaded
                             val tokens = cmd.split(Regex("\\s+"))
                             val flashIdx = tokens.indexOfFirst { it.equals("flash", ignoreCase = true) }
                             val loadedFile = state.selectedFlashFile
@@ -452,7 +448,6 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
                     else -> {
-                        // ADB or Shell Command: if USB OTG device is attached, execute via Native USB ADB!
                         if (portName != null) {
                             usbController.executeAdbOverUsbOtg(
                                 deviceName = portName,

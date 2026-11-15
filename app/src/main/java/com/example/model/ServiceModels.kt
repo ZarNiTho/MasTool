@@ -10,8 +10,8 @@ enum class ToolScreenMode(
     val headerTitle: String
 ) {
     FASTBOOT_ONECLICK(
-        badgeTitle = "[ADB / FB] One-Click",
-        headerTitle = "One-Click ADB & Fastboot Service"
+        badgeTitle = "[FB] Fastboot",
+        headerTitle = "Fastboot Mode (Bootloader One-Click)"
     ),
     FASTBOOT_FLASH(
         badgeTitle = "[FB] Flash Tool",
@@ -19,16 +19,16 @@ enum class ToolScreenMode(
     ),
     ADB_ONECLICK(
         badgeTitle = "[ADB] Service",
-        headerTitle = "ADB Mode (System & Package Service)"
+        headerTitle = "ADB Mode (System & Package One-Click)"
     ),
     CMD_TERMINAL(
-        badgeTitle = "[ADB / FB] Terminal",
-        headerTitle = "ADB & Fastboot Command Terminal"
+        badgeTitle = "[CMD] Terminal",
+        headerTitle = "Dedicated Command Shell Terminal"
     )
 }
 
 enum class ServiceBrand(val displayName: String, val shortTag: String) {
-    UNIVERSAL("Auto / Universal (Android 10–16)", "Universal"),
+    UNIVERSAL("Universal (Android 10–16)", "Universal"),
     XIAOMI("Xiaomi / Redmi / Poco", "Xiaomi"),
     HUAWEI("Huawei / Honor (HiSilicon)", "Huawei"),
     VIVO("Vivo / iQOO (BBK)", "Vivo"),
@@ -40,20 +40,21 @@ enum class ServiceBrand(val displayName: String, val shortTag: String) {
 }
 
 enum class ActionGroup(val displayName: String) {
-    ALL("All Actions (Universal + Brand)"),
-    BRAND_OEM("Brand OEM Specific Only"),
-    INFO_GETVAR("Read Info & GetVar"),
+    ALL("All Actions"),
+    BRAND_OEM("Brand OEM Specific"),
+    INFO_GETVAR("Read Info"),
     UNLOCK_LOCK("Bootloader Unlock / Lock"),
-    DYNAMIC_SLOT("Dynamic Partition & Slot A/B (A10–A16)"),
-    WIPE_ERASE("Wipe Data & Erase Partitions"),
-    REBOOT_MODES("Reboot & Service Modes"),
-    ADB_SYSTEM("ADB System, Battery & Debloat")
+    DYNAMIC_SLOT("Dynamic Partition & Slot A/B"),
+    WIPE_ERASE("Wipe Data & Erase"),
+    REBOOT_MODES("Reboot Modes"),
+    ADB_SYSTEM("ADB System & Debloat")
 }
 
 data class ServiceActionItem(
     val id: String,
     val title: String,
     val command: String,
+    val description: String = "",
     val brand: ServiceBrand,
     val group: ActionGroup,
     val isAdb: Boolean = false

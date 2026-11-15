@@ -14,17 +14,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -45,13 +49,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -59,11 +63,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -97,6 +104,7 @@ fun WorkbenchScreen(
     onExecuteCommand: (String) -> Unit,
     onRawCommandChange: (String) -> Unit,
     onClearLogs: () -> Unit,
+    onDismissAbout: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isDark = uiState.themeMode == ThemeMode.DARK
@@ -104,16 +112,22 @@ fun WorkbenchScreen(
     val cardBorder = if (isDark) Color(0xFF1F2937) else Color(0xFFCBD5E1)
     val consoleBg = if (isDark) Color(0xFF090D16) else Color(0xFF0F172A)
 
+    if (uiState.showAboutDialog) {
+        AboutCommandReferenceDialog(
+            onDismiss = onDismissAbout
+        )
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9))
     ) {
-        // COMPACT TOP SELECTION & START DECK (~26% height -> weight 0.72f)
+        // COMPACT TOP SELECTION & START DECK (Clean, uncluttered, auto-fitting)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.72f)
+                .wrapContentHeight()
                 .padding(horizontal = 8.dp, vertical = 5.dp)
                 .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
                 .testTag("top_options_panel"),
@@ -126,7 +140,6 @@ fun WorkbenchScreen(
                     uiState = uiState,
                     availableActions = availableActions,
                     onSelectBrand = onSelectBrand,
-                    onSelectActionGroup = onSelectActionGroup,
                     onSelectAction = onSelectAction,
                     onScanPorts = onScanPorts,
                     onStartPressed = onStartPressed
@@ -141,15 +154,12 @@ fun WorkbenchScreen(
                     onToggleFastbootd = onToggleFastbootd,
                     onToggleStep = onToggleStep,
                     onPickFile = onPickFile,
-                    onScanPorts = onScanPorts,
                     onStartPressed = onStartPressed
                 )
-                ToolScreenMode.CMD_TERMINAL -> TerminalDropdownStartPanel(
+                ToolScreenMode.CMD_TERMINAL -> TerminalDedicatedStartPanel(
                     uiState = uiState,
-                    availableActions = availableActions,
-                    onSelectBrand = onSelectBrand,
-                    onSelectAction = onSelectAction,
                     onRawCommandChange = onRawCommandChange,
+                    onScanPorts = onScanPorts,
                     onStartPressed = onStartPressed
                 )
             }
@@ -198,114 +208,75 @@ fun WorkbenchScreen(
             }
         }
 
-        // EXPANDED BOTTOM LIVE LOG CONSOLE (~74% height -> weight 2.28f)
+        // EXPANDED BOTTOM LIVE LOG CONSOLE (Pure console, no bottom text input bar)
         LiveLogConsolePanel(
             uiState = uiState,
             consoleBg = consoleBg,
-            onRawCommandChange = onRawCommandChange,
-            onExecuteCommand = onExecuteCommand,
             onClearLogs = onClearLogs,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(2.28f)
+                .weight(1f)
         )
     }
 }
 
 /**
- * Dropdown-based One-Click & Brand-Specific Selector + Single START Button
+ * Clean One-Click Selector (Fastboot Tab has ONLY Fastboot actions; ADB Tab has ONLY ADB actions).
+ * Displays ONLY clean Action Titles without raw command strings underneath.
  */
 @Composable
 private fun DropdownActionStartPanel(
     uiState: ServiceUiState,
     availableActions: List<ServiceActionItem>,
     onSelectBrand: (ServiceBrand) -> Unit,
-    onSelectActionGroup: (ActionGroup) -> Unit,
     onSelectAction: (ServiceActionItem) -> Unit,
     onScanPorts: () -> Unit,
     onStartPressed: () -> Unit
 ) {
     var brandExpanded by remember { mutableStateOf(false) }
-    var groupExpanded by remember { mutableStateOf(false) }
     var actionExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Row 1: Brand Dropdown + Category Group Dropdown
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(modifier = Modifier.weight(1f)) {
-                SelectorDropdownBox(
-                    text = "Brand: ${uiState.selectedBrand.shortTag}",
-                    textColor = Color.White,
-                    onClick = { brandExpanded = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("brand_dropdown")
-                )
-                DropdownMenu(
-                    expanded = brandExpanded,
-                    onDismissRequest = { brandExpanded = false }
-                ) {
-                    ServiceBrand.entries.forEach { brand ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = brand.displayName,
-                                    fontWeight = if (brand == uiState.selectedBrand) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            onClick = {
-                                brandExpanded = false
-                                onSelectBrand(brand)
-                            }
-                        )
-                    }
-                }
-            }
-
-            Box(modifier = Modifier.weight(1f)) {
-                SelectorDropdownBox(
-                    text = uiState.selectedActionGroup.displayName,
-                    textColor = Color(0xFF38BDF8),
-                    onClick = { groupExpanded = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("group_dropdown")
-                )
-                DropdownMenu(
-                    expanded = groupExpanded,
-                    onDismissRequest = { groupExpanded = false }
-                ) {
-                    ActionGroup.entries.forEach { grp ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = grp.displayName,
-                                    fontWeight = if (grp == uiState.selectedActionGroup) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            onClick = {
-                                groupExpanded = false
-                                onSelectActionGroup(grp)
-                            }
-                        )
-                    }
+        // Row 1: Brand Dropdown
+        Box(modifier = Modifier.fillMaxWidth()) {
+            SelectorDropdownBox(
+                text = "Brand: ${uiState.selectedBrand.displayName}",
+                textColor = Color.White,
+                onClick = { brandExpanded = true },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("brand_dropdown")
+            )
+            DropdownMenu(
+                expanded = brandExpanded,
+                onDismissRequest = { brandExpanded = false }
+            ) {
+                ServiceBrand.entries.forEach { brand ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = brand.displayName,
+                                fontWeight = if (brand == uiState.selectedBrand) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        onClick = {
+                            brandExpanded = false
+                            onSelectBrand(brand)
+                        }
+                    )
                 }
             }
         }
 
-        // Row 2: Action / Command Selection Dropdown Box (70+ Brand & Universal Operations)
+        // Row 2: Clean Single-Line Action Dropdown (No raw cmd string underneath)
         Box(modifier = Modifier.fillMaxWidth()) {
             SelectorDropdownBox(
                 text = uiState.selectedAction.title,
-                subText = uiState.selectedAction.command,
                 textColor = Color(0xFFFACC15),
                 onClick = { actionExpanded = true },
                 modifier = Modifier
@@ -315,24 +286,18 @@ private fun DropdownActionStartPanel(
             DropdownMenu(
                 expanded = actionExpanded,
                 onDismissRequest = { actionExpanded = false },
-                modifier = Modifier.height(340.dp)
+                modifier = Modifier.heightIn(max = 300.dp)
             ) {
                 availableActions.forEach { item ->
                     DropdownMenuItem(
                         text = {
-                            Column(modifier = Modifier.padding(vertical = 2.dp)) {
-                                Text(
-                                    text = item.title,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp
-                                )
-                                Text(
-                                    text = item.command,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF38BDF8)
-                                )
-                            }
+                            Text(
+                                text = item.title,
+                                fontWeight = if (item.id == uiState.selectedAction.id) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         },
                         onClick = {
                             actionExpanded = false
@@ -346,7 +311,8 @@ private fun DropdownActionStartPanel(
         // Row 3: Scan OTG + Single Primary START Button
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
@@ -354,12 +320,14 @@ private fun DropdownActionStartPanel(
                 border = BorderStroke(1.dp, Color(0xFF283548)),
                 modifier = Modifier
                     .weight(0.85f)
-                    .height(40.dp)
+                    .height(38.dp)
                     .clickable { onScanPorts() }
                     .testTag("scan_ports_button")
             ) {
                 Row(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
                     horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -369,12 +337,14 @@ private fun DropdownActionStartPanel(
                         tint = Color(0xFF38BDF8),
                         modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = "Scan OTG",
                         style = MaterialTheme.typography.labelMedium,
                         color = Color.White,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -386,22 +356,24 @@ private fun DropdownActionStartPanel(
                     contentColor = Color.White
                 ),
                 shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier
                     .weight(1.45f)
-                    .height(40.dp)
+                    .height(38.dp)
                     .testTag("start_action_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = "Start",
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(17.dp)
                 )
-                Spacer(modifier = Modifier.width(6.dp))
+                Spacer(modifier = Modifier.width(5.dp))
                 Text(
                     text = "START (${uiState.selectedBrand.shortTag.uppercase(Locale.US)})",
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.ExtraBold
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -422,7 +394,6 @@ private fun FlashDropdownStartPanel(
     onToggleFastbootd: () -> Unit,
     onToggleStep: (String) -> Unit,
     onPickFile: () -> Unit,
-    onScanPorts: () -> Unit,
     onStartPressed: () -> Unit
 ) {
     var brandExpanded by remember { mutableStateOf(false) }
@@ -444,7 +415,7 @@ private fun FlashDropdownStartPanel(
             },
             text = {
                 LazyColumn(
-                    modifier = Modifier.height(260.dp),
+                    modifier = Modifier.heightIn(max = 260.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(selectedFile.steps, key = { it.id }) { step ->
@@ -462,18 +433,12 @@ private fun FlashDropdownStartPanel(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = step.targetPartition,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = step.command,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                            }
+                            Text(
+                                text = step.targetPartition,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
                         }
                     }
                 }
@@ -488,9 +453,9 @@ private fun FlashDropdownStartPanel(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+            .fillMaxWidth()
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         // Row 1: Brand Dropdown + Partition Dropdown
         Row(
@@ -530,7 +495,7 @@ private fun FlashDropdownStartPanel(
                 DropdownMenu(
                     expanded = partitionExpanded,
                     onDismissRequest = { partitionExpanded = false },
-                    modifier = Modifier.height(300.dp)
+                    modifier = Modifier.heightIn(max = 280.dp)
                 ) {
                     CommandRepository.supportedPartitions.forEach { part ->
                         DropdownMenuItem(
@@ -545,7 +510,7 @@ private fun FlashDropdownStartPanel(
             }
         }
 
-        // Row 2: Load Flash File (.img / .bat / UPDATE.APP) + Parts Counter + Option Pills
+        // Row 2: Load Flash File (.img / .bat / UPDATE.APP) + Parts Counter
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -557,7 +522,7 @@ private fun FlashDropdownStartPanel(
                 border = BorderStroke(1.dp, Color(0xFF283548)),
                 modifier = Modifier
                     .weight(1.4f)
-                    .height(38.dp)
+                    .height(36.dp)
                     .clickable { onPickFile() }
                     .testTag("pick_flash_file_button")
             ) {
@@ -591,7 +556,7 @@ private fun FlashDropdownStartPanel(
                 border = BorderStroke(1.dp, Color(0xFF283548)),
                 modifier = Modifier
                     .weight(0.75f)
-                    .height(38.dp)
+                    .height(36.dp)
                     .clickable(enabled = totalParts > 0) { showPartsDialog = true }
                     .testTag("parts_count_button")
             ) {
@@ -603,7 +568,8 @@ private fun FlashDropdownStartPanel(
                         text = "$enabledParts/$totalParts Parts",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color(0xFF38BDF8),
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
                     )
                 }
             }
@@ -634,22 +600,24 @@ private fun FlashDropdownStartPanel(
                     contentColor = Color.White
                 ),
                 shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier
                     .weight(0.95f)
-                    .height(38.dp)
+                    .height(36.dp)
                     .testTag("execute_flash_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.Bolt,
                     contentDescription = null,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(15.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
                     text = "START FLASH",
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.ExtraBold
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -657,116 +625,74 @@ private fun FlashDropdownStartPanel(
 }
 
 /**
- * Dedicated Terminal Control Panel with Brand Dropdown, Preset Command Dropdown, and Single START Button
+ * Dedicated Command Terminal Tab Panel:
+ * Strictly for custom command execution without ADB/Fastboot preset dropdowns.
  */
 @Composable
-private fun TerminalDropdownStartPanel(
+private fun TerminalDedicatedStartPanel(
     uiState: ServiceUiState,
-    availableActions: List<ServiceActionItem>,
-    onSelectBrand: (ServiceBrand) -> Unit,
-    onSelectAction: (ServiceActionItem) -> Unit,
     onRawCommandChange: (String) -> Unit,
+    onScanPorts: () -> Unit,
     onStartPressed: () -> Unit
 ) {
-    var brandExpanded by remember { mutableStateOf(false) }
-    var presetExpanded by remember { mutableStateOf(false) }
+    val isDark = uiState.themeMode == ThemeMode.DARK
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Row 1: Brand Dropdown + Preset Command Dropdown
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Box(modifier = Modifier.weight(0.85f)) {
-                SelectorDropdownBox(
-                    text = "Brand: ${uiState.selectedBrand.shortTag}",
-                    textColor = Color.White,
-                    onClick = { brandExpanded = true },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                DropdownMenu(
-                    expanded = brandExpanded,
-                    onDismissRequest = { brandExpanded = false }
-                ) {
-                    ServiceBrand.entries.forEach { brand ->
-                        DropdownMenuItem(
-                            text = { Text(brand.displayName, fontWeight = FontWeight.SemiBold) },
-                            onClick = {
-                                brandExpanded = false
-                                onSelectBrand(brand)
-                            }
-                        )
-                    }
-                }
-            }
+        // Row 1: Dedicated Command Input Box
+        CompactCommandInputBox(
+            value = uiState.rawCommandInput,
+            onValueChange = onRawCommandChange,
+            placeholder = "Enter command...",
+            isDark = isDark,
+            onSubmit = onStartPressed,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("terminal_cmd_input")
+        )
 
-            Box(modifier = Modifier.weight(1.15f)) {
-                SelectorDropdownBox(
-                    text = uiState.selectedAction.title,
-                    textColor = Color(0xFF38BDF8),
-                    onClick = { presetExpanded = true },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                DropdownMenu(
-                    expanded = presetExpanded,
-                    onDismissRequest = { presetExpanded = false },
-                    modifier = Modifier.height(320.dp)
-                ) {
-                    availableActions.forEach { item ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(item.title, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    Text(
-                                        text = item.command,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 11.sp,
-                                        color = Color(0xFF38BDF8)
-                                    )
-                                }
-                            },
-                            onClick = {
-                                presetExpanded = false
-                                onSelectAction(item)
-                            }
-                        )
-                    }
-                }
-            }
-        }
-
-        // Row 2: Custom Command Input + Single START Button
-        val isDark = uiState.themeMode == ThemeMode.DARK
+        // Row 2: Scan OTG + Single START Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedTextField(
-                value = uiState.rawCommandInput,
-                onValueChange = onRawCommandChange,
-                placeholder = {
-                    Text(
-                        text = "fastboot / adb / shell...",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF64748B)
-                    )
-                },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.labelMedium.copy(
-                    fontFamily = FontFamily.Monospace,
-                    color = if (isDark) Color.White else Color(0xFF0F172A)
-                ),
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF162032),
+                border = BorderStroke(1.dp, Color(0xFF283548)),
                 modifier = Modifier
-                    .weight(1.35f)
-                    .height(44.dp)
-                    .testTag("terminal_cmd_input")
-            )
+                    .weight(0.85f)
+                    .height(38.dp)
+                    .clickable { onScanPorts() }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = "Scan USB",
+                        tint = Color(0xFF38BDF8),
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "Scan OTG",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
 
             Button(
                 onClick = onStartPressed,
@@ -775,19 +701,97 @@ private fun TerminalDropdownStartPanel(
                     contentColor = Color.White
                 ),
                 shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier
-                    .weight(0.65f)
-                    .height(44.dp)
+                    .weight(1.45f)
+                    .height(38.dp)
                     .testTag("terminal_send_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = "Start",
-                    modifier = Modifier.size(18.dp)
+                    modifier = Modifier.size(17.dp)
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("START", fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.width(5.dp))
+                Text(
+                    text = "START COMMAND",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Vertically-centered single-line command input box (used only in the dedicated Terminal tab)
+ */
+@Composable
+private fun CompactCommandInputBox(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    isDark: Boolean,
+    onSubmit: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bgColor = if (isDark) Color(0xFF111827) else Color(0xFFF8FAFC)
+    val borderColor = if (isDark) Color(0xFF1E3A8A) else Color(0xFF94A3B8)
+    val textColor = if (isDark) Color.White else Color(0xFF0F172A)
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = modifier.heightIn(min = 40.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                if (value.isEmpty()) {
+                    Text(
+                        text = placeholder,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF64748B),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    singleLine = true,
+                    cursorBrush = SolidColor(Color(0xFF38BDF8)),
+                    textStyle = TextStyle(
+                        color = textColor,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = KeyboardActions(onSend = { onSubmit() }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (value.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Clear Input",
+                    tint = Color(0xFF94A3B8),
+                    modifier = Modifier
+                        .size(16.dp)
+                        .clickable { onValueChange("") }
+                )
             }
         }
     }
@@ -798,44 +802,33 @@ private fun SelectorDropdownBox(
     text: String,
     textColor: Color,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    subText: String? = null
+    modifier: Modifier = Modifier
 ) {
     Surface(
         shape = RoundedCornerShape(8.dp),
         color = Color(0xFF162032),
         border = BorderStroke(1.dp, Color(0xFF283548)),
         modifier = modifier
-            .height(if (subText != null) 46.dp else 38.dp)
+            .heightIn(min = 38.dp)
             .clickable { onClick() }
     ) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 10.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = text,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = textColor,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (subText != null) {
-                    Text(
-                        text = subText,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF94A3B8),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelMedium,
+                color = textColor,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(4.dp))
             Icon(
                 imageVector = Icons.Default.ArrowDropDown,
                 contentDescription = null,
@@ -884,12 +877,14 @@ private fun OptionTogglePill(
     }
 }
 
+/**
+ * Pure Live Log Console Panel (Bottom ~75% of screen).
+ * No text input bar is shown here so One-Click tabs remain completely clean.
+ */
 @Composable
 private fun LiveLogConsolePanel(
     uiState: ServiceUiState,
     consoleBg: Color,
-    onRawCommandChange: (String) -> Unit,
-    onExecuteCommand: (String) -> Unit,
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -951,7 +946,7 @@ private fun LiveLogConsolePanel(
                             clipboard.setText(AnnotatedString(allLogs))
                         },
                         modifier = Modifier
-                            .size(26.dp)
+                            .size(28.dp)
                             .testTag("copy_logs_button")
                     ) {
                         Icon(
@@ -964,7 +959,7 @@ private fun LiveLogConsolePanel(
                     IconButton(
                         onClick = onClearLogs,
                         modifier = Modifier
-                            .size(26.dp)
+                            .size(28.dp)
                             .testTag("clear_logs_button")
                     ) {
                         Icon(
@@ -991,59 +986,6 @@ private fun LiveLogConsolePanel(
             ) {
                 items(uiState.consoleLogs, key = { it.id }) { entry ->
                     ConsoleTimestampRow(entry = entry)
-                }
-            }
-
-            // Bottom Direct Command Input Bar
-            if (uiState.screenMode != ToolScreenMode.CMD_TERMINAL) {
-                HorizontalDivider(color = Color(0xFF1E293B))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF0D1322))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedTextField(
-                        value = uiState.rawCommandInput,
-                        onValueChange = onRawCommandChange,
-                        placeholder = {
-                            Text(
-                                text = "adb / fastboot command...",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF64748B)
-                            )
-                        },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.labelMedium.copy(
-                            color = Color.White,
-                            fontFamily = FontFamily.Monospace
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(42.dp)
-                    )
-                    Button(
-                        onClick = {
-                            val cmd = uiState.rawCommandInput.trim()
-                            if (cmd.isNotEmpty()) {
-                                onExecuteCommand(cmd)
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        modifier = Modifier.height(42.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
-                            contentDescription = "Execute",
-                            tint = Color.White,
-                            modifier = Modifier.size(15.dp)
-                        )
-                    }
                 }
             }
         }
@@ -1081,4 +1023,163 @@ private fun ConsoleTimestampRow(entry: ConsoleLogEntry) {
             modifier = Modifier.weight(1f)
         )
     }
+}
+
+/**
+ * About & Command Reference Dialog:
+ * Shows all Fastboot & ADB commands, their Brand, and their detailed explanations.
+ */
+@Composable
+fun AboutCommandReferenceDialog(
+    onDismiss: () -> Unit
+) {
+    var filterTab by remember { mutableIntStateOf(0) } // 0 = Fastboot, 1 = ADB
+    val filteredActions = remember(filterTab) {
+        if (filterTab == 0) {
+            CommandRepository.allActions.filter { !it.isAdb }
+        } else {
+            CommandRepository.allActions.filter { it.isAdb }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF0F172A),
+        titleContentColor = Color.White,
+        textContentColor = Color(0xFFE2E8F0),
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "About & Command Reference",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "FastDeck OTG • Android 10–16 Service Guide",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                }
+
+                // Filter Tabs: Fastboot Commands vs ADB Commands
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (filterTab == 0) Color(0xFF10B981) else Color(0xFF1E293B),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clickable { filterTab = 0 }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "Fastboot Commands",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (filterTab == 0) Color(0xFF052E16) else Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (filterTab == 1) Color(0xFF38BDF8) else Color(0xFF1E293B),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .clickable { filterTab = 1 }
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                text = "ADB Commands",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (filterTab == 1) Color(0xFF082F49) else Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        text = {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(380.dp)
+                    .testTag("about_command_list"),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filteredActions, key = { it.id }) { item ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF1E293B),
+                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = item.title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFFACC15),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = Color(0xFF0F172A)
+                                ) {
+                                    Text(
+                                        text = item.brand.shortTag,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFF38BDF8),
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = item.command,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color(0xFF34D399)
+                            )
+                            if (item.description.isNotEmpty()) {
+                                Text(
+                                    text = item.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFCBD5E1)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+            }
+        }
+    )
 }

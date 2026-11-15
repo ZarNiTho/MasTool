@@ -7,6 +7,7 @@ import com.example.data.CommandRepository
 import com.example.data.FlashFileProcessor
 import com.example.model.ActionGroup
 import com.example.model.ServiceBrand
+import com.example.model.ToolScreenMode
 import com.example.ui.ServiceViewModel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -26,7 +27,11 @@ class ExampleRobolectricTest {
         assertEquals("FastDeck OTG", appName)
 
         assertTrue(CommandRepository.allActions.size >= 65)
-        assertTrue(CommandRepository.allActions.all { it.command.isNotBlank() && it.title.isNotBlank() })
+        assertTrue(
+            CommandRepository.allActions.all {
+                it.command.isNotBlank() && it.title.isNotBlank() && it.description.isNotBlank()
+            }
+        )
     }
 
     @Test
@@ -39,19 +44,28 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `verify viewModel brand filtering and action selection`() {
+    fun `verify viewModel strict mode isolation and brand filtering`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = ServiceViewModel(app)
 
+        // Fastboot tab must contain ONLY Fastboot actions (!isAdb)
+        vm.navigateToMode(ToolScreenMode.FASTBOOT_ONECLICK)
         vm.setBrand(ServiceBrand.XIAOMI)
         vm.setActionGroup(ActionGroup.BRAND_OEM)
-        val xiaomiActions = vm.getAvailableActions()
-        assertTrue(xiaomiActions.isNotEmpty())
-        assertTrue(xiaomiActions.all { it.brand == ServiceBrand.XIAOMI })
+        val xiaomiFbActions = vm.getAvailableActions()
+        assertTrue(xiaomiFbActions.isNotEmpty())
+        assertTrue(xiaomiFbActions.all { it.brand == ServiceBrand.XIAOMI && !it.isAdb })
+
+        // ADB tab must contain ONLY ADB actions (isAdb)
+        vm.navigateToMode(ToolScreenMode.ADB_ONECLICK)
+        vm.setBrand(ServiceBrand.XIAOMI)
+        val xiaomiAdbActions = vm.getAvailableActions()
+        assertTrue(xiaomiAdbActions.isNotEmpty())
+        assertTrue(xiaomiAdbActions.all { it.brand == ServiceBrand.XIAOMI && it.isAdb })
 
         vm.setBrand(ServiceBrand.HUAWEI)
-        val huaweiActions = vm.getAvailableActions()
-        assertTrue(huaweiActions.isNotEmpty())
-        assertTrue(huaweiActions.all { it.brand == ServiceBrand.HUAWEI })
+        val huaweiAdbActions = vm.getAvailableActions()
+        assertTrue(huaweiAdbActions.isNotEmpty())
+        assertTrue(huaweiAdbActions.all { it.brand == ServiceBrand.HUAWEI && it.isAdb })
     }
 }
