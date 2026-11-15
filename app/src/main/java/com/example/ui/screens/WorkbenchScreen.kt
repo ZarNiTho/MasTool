@@ -102,14 +102,17 @@ fun WorkbenchScreen(
     modifier: Modifier = Modifier
 ) {
     val isDark = uiState.themeMode == ThemeMode.DARK
+    val screenBg = if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9)
     val cardBg = if (isDark) Color(0xFF111827) else Color(0xFFFFFFFF)
     val cardBorder = if (isDark) Color(0xFF1F2937) else Color(0xFFCBD5E1)
-    val consoleBg = if (isDark) Color(0xFF090D16) else Color(0xFF0F172A)
+    val statusStripBg = if (isDark) Color(0xFF0B111E) else Color(0xFFE2E8F0)
+    val statusStripText = if (isDark) Color(0xFF94A3B8) else Color(0xFF334155)
+    val consoleBg = if (isDark) Color(0xFF090D16) else Color(0xFFFFFFFF)
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9))
+            .background(screenBg)
     ) {
         // COMPACT TOP SELECTION & START DECK (Clean, uncluttered, auto-fitting)
         Surface(
@@ -126,6 +129,7 @@ fun WorkbenchScreen(
                 ToolScreenMode.FASTBOOT_ONECLICK,
                 ToolScreenMode.ADB_ONECLICK -> DropdownActionStartPanel(
                     uiState = uiState,
+                    isDark = isDark,
                     availableActions = availableActions,
                     onSelectBrand = onSelectBrand,
                     onSelectAction = onSelectAction,
@@ -134,6 +138,7 @@ fun WorkbenchScreen(
                 )
                 ToolScreenMode.FASTBOOT_FLASH -> FlashDropdownStartPanel(
                     uiState = uiState,
+                    isDark = isDark,
                     onSelectBrand = onSelectBrand,
                     onSelectPartition = onSelectPartition,
                     onToggleVerity = onToggleVerity,
@@ -151,7 +156,7 @@ fun WorkbenchScreen(
         // MIDDLE STATUS & PROGRESS STRIP
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = if (isDark) Color(0xFF0B111E) else Color(0xFFE2E8F0)
+            color = statusStripBg
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 HorizontalDivider(color = cardBorder)
@@ -166,7 +171,7 @@ fun WorkbenchScreen(
                         text = uiState.statusBarText,
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = if (isDark) Color(0xFF64748B) else Color(0xFF475569),
+                        color = statusStripText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -176,7 +181,7 @@ fun WorkbenchScreen(
                         text = String.format(Locale.US, "%.1f%%", uiState.progressPercent),
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+                        color = statusStripText
                     )
                 }
                 if (uiState.isBusy) {
@@ -191,9 +196,10 @@ fun WorkbenchScreen(
             }
         }
 
-        // EXPANDED BOTTOM LIVE LOG CONSOLE (Pure console, no bottom text input bar)
+        // EXPANDED BOTTOM LIVE LOG CONSOLE
         LiveLogConsolePanel(
             uiState = uiState,
+            isDark = isDark,
             consoleBg = consoleBg,
             onClearLogs = onClearLogs,
             modifier = Modifier
@@ -205,11 +211,11 @@ fun WorkbenchScreen(
 
 /**
  * Clean One-Click Selector (Fastboot Tab has ONLY Fastboot actions; ADB Tab has ONLY ADB actions).
- * Displays ONLY clean Action Titles without raw command strings underneath.
  */
 @Composable
 private fun DropdownActionStartPanel(
     uiState: ServiceUiState,
+    isDark: Boolean,
     availableActions: List<ServiceActionItem>,
     onSelectBrand: (ServiceBrand) -> Unit,
     onSelectAction: (ServiceActionItem) -> Unit,
@@ -218,6 +224,12 @@ private fun DropdownActionStartPanel(
 ) {
     var brandExpanded by remember { mutableStateOf(false) }
     var actionExpanded by remember { mutableStateOf(false) }
+
+    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
+    val actionHighlightText = if (isDark) Color(0xFFFACC15) else Color(0xFF0369A1)
+    val scanBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
+    val scanBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
+    val scanIconTint = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
     Column(
         modifier = Modifier
@@ -229,7 +241,8 @@ private fun DropdownActionStartPanel(
         Box(modifier = Modifier.fillMaxWidth()) {
             SelectorDropdownBox(
                 text = "Brand: ${uiState.selectedBrand.displayName}",
-                textColor = Color.White,
+                textColor = primaryText,
+                isDark = isDark,
                 onClick = { brandExpanded = true },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -256,11 +269,12 @@ private fun DropdownActionStartPanel(
             }
         }
 
-        // Row 2: Clean Single-Line Action Dropdown (No raw cmd string underneath)
+        // Row 2: Clean Single-Line Action Dropdown
         Box(modifier = Modifier.fillMaxWidth()) {
             SelectorDropdownBox(
                 text = uiState.selectedAction.title,
-                textColor = Color(0xFFFACC15),
+                textColor = actionHighlightText,
+                isDark = isDark,
                 onClick = { actionExpanded = true },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -299,8 +313,8 @@ private fun DropdownActionStartPanel(
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF162032),
-                border = BorderStroke(1.dp, Color(0xFF283548)),
+                color = scanBg,
+                border = BorderStroke(1.dp, scanBorder),
                 modifier = Modifier
                     .weight(0.85f)
                     .height(38.dp)
@@ -317,14 +331,14 @@ private fun DropdownActionStartPanel(
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Scan USB",
-                        tint = Color(0xFF38BDF8),
+                        tint = scanIconTint,
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = "Scan OTG",
                         style = MaterialTheme.typography.labelMedium,
-                        color = Color.White,
+                        color = primaryText,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -369,6 +383,7 @@ private fun DropdownActionStartPanel(
 @Composable
 private fun FlashDropdownStartPanel(
     uiState: ServiceUiState,
+    isDark: Boolean,
     onSelectBrand: (ServiceBrand) -> Unit,
     onSelectPartition: (String) -> Unit,
     onToggleVerity: () -> Unit,
@@ -386,6 +401,11 @@ private fun FlashDropdownStartPanel(
     val selectedFile = uiState.selectedFlashFile
     val totalParts = selectedFile?.steps?.size ?: 0
     val enabledParts = selectedFile?.steps?.count { it.enabled } ?: 0
+
+    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
+    val accentText = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    val boxBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
+    val boxBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
 
     if (showPartsDialog && selectedFile != null) {
         AlertDialog(
@@ -412,7 +432,7 @@ private fun FlashDropdownStartPanel(
                             Icon(
                                 imageVector = if (step.enabled) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                 contentDescription = null,
-                                tint = Color(0xFF38BDF8),
+                                tint = accentText,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -448,7 +468,8 @@ private fun FlashDropdownStartPanel(
             Box(modifier = Modifier.weight(1f)) {
                 SelectorDropdownBox(
                     text = "Brand: ${uiState.selectedBrand.shortTag}",
-                    textColor = Color.White,
+                    textColor = primaryText,
+                    isDark = isDark,
                     onClick = { brandExpanded = true },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -471,7 +492,8 @@ private fun FlashDropdownStartPanel(
             Box(modifier = Modifier.weight(1f)) {
                 SelectorDropdownBox(
                     text = uiState.selectedPartition,
-                    textColor = Color(0xFF38BDF8),
+                    textColor = accentText,
+                    isDark = isDark,
                     onClick = { partitionExpanded = true },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -501,8 +523,8 @@ private fun FlashDropdownStartPanel(
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF162032),
-                border = BorderStroke(1.dp, Color(0xFF283548)),
+                color = boxBg,
+                border = BorderStroke(1.dp, boxBorder),
                 modifier = Modifier
                     .weight(1.4f)
                     .height(36.dp)
@@ -518,14 +540,14 @@ private fun FlashDropdownStartPanel(
                     Icon(
                         imageVector = Icons.Default.Description,
                         contentDescription = null,
-                        tint = Color(0xFF38BDF8),
+                        tint = accentText,
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = selectedFile?.fileName ?: "Load .img / .bat / UPDATE.APP",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
+                        color = primaryText,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -535,8 +557,8 @@ private fun FlashDropdownStartPanel(
 
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF162032),
-                border = BorderStroke(1.dp, Color(0xFF283548)),
+                color = boxBg,
+                border = BorderStroke(1.dp, boxBorder),
                 modifier = Modifier
                     .weight(0.75f)
                     .height(36.dp)
@@ -550,7 +572,7 @@ private fun FlashDropdownStartPanel(
                     Text(
                         text = "$enabledParts/$totalParts Parts",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF38BDF8),
+                        color = accentText,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1
                     )
@@ -570,10 +592,10 @@ private fun FlashDropdownStartPanel(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                OptionTogglePill("Verity", uiState.disableVerity, onToggleVerity)
-                OptionTogglePill("Reboot", uiState.autoReboot, onToggleAutoReboot)
-                OptionTogglePill("Fastbootd", uiState.useFastbootd, onToggleFastbootd)
-                OptionTogglePill("CRC", uiState.checksumVerify, onToggleChecksum)
+                OptionTogglePill("Verity", uiState.disableVerity, isDark, onToggleVerity)
+                OptionTogglePill("Reboot", uiState.autoReboot, isDark, onToggleAutoReboot)
+                OptionTogglePill("Fastbootd", uiState.useFastbootd, isDark, onToggleFastbootd)
+                OptionTogglePill("CRC", uiState.checksumVerify, isDark, onToggleChecksum)
             }
 
             Button(
@@ -611,13 +633,18 @@ private fun FlashDropdownStartPanel(
 private fun SelectorDropdownBox(
     text: String,
     textColor: Color,
+    isDark: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val boxBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
+    val boxBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
+    val arrowTint = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = Color(0xFF162032),
-        border = BorderStroke(1.dp, Color(0xFF283548)),
+        color = boxBg,
+        border = BorderStroke(1.dp, boxBorder),
         modifier = modifier
             .heightIn(min = 38.dp)
             .clickable { onClick() }
@@ -642,7 +669,7 @@ private fun SelectorDropdownBox(
             Icon(
                 imageVector = Icons.Default.ArrowDropDown,
                 contentDescription = null,
-                tint = Color(0xFF94A3B8),
+                tint = arrowTint,
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -653,14 +680,19 @@ private fun SelectorDropdownBox(
 private fun OptionTogglePill(
     label: String,
     checked: Boolean,
+    isDark: Boolean,
     onClick: () -> Unit
 ) {
+    val uncheckedBg = if (isDark) Color(0xFF162032) else Color(0xFFF1F5F9)
+    val uncheckedBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
+    val uncheckedFg = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+
     Surface(
         shape = RoundedCornerShape(6.dp),
-        color = if (checked) Color(0xFF1D4ED8) else Color(0xFF162032),
+        color = if (checked) Color(0xFF2563EB) else uncheckedBg,
         border = BorderStroke(
             1.dp,
-            if (checked) Color(0xFF3B82F6) else Color(0xFF283548)
+            if (checked) Color(0xFF3B82F6) else uncheckedBorder
         ),
         modifier = Modifier
             .height(34.dp)
@@ -673,14 +705,14 @@ private fun OptionTogglePill(
             Icon(
                 imageVector = if (checked) Icons.Default.Check else Icons.Default.Close,
                 contentDescription = null,
-                tint = if (checked) Color.White else Color(0xFF64748B),
+                tint = if (checked) Color.White else uncheckedFg,
                 modifier = Modifier.size(13.dp)
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (checked) Color.White else Color(0xFF64748B),
+                color = if (checked) Color.White else uncheckedFg,
                 fontWeight = FontWeight.Bold
             )
         }
@@ -689,17 +721,24 @@ private fun OptionTogglePill(
 
 /**
  * Pure Live Log Console Panel (Bottom ~75% of screen).
- * No text input bar is shown here so One-Click tabs remain completely clean.
+ * Adapts cleanly to both Light and Dark themes.
  */
 @Composable
 private fun LiveLogConsolePanel(
     uiState: ServiceUiState,
+    isDark: Boolean,
     consoleBg: Color,
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
+
+    val headerBg = if (isDark) Color(0xFF090D16) else Color(0xFFF8FAFC)
+    val dividerColor = if (isDark) Color(0xFF1E293B) else Color(0xFFE2E8F0)
+    val titleColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    val countColor = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+    val iconTint = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
 
     LaunchedEffect(uiState.consoleLogs.size) {
         if (uiState.consoleLogs.isNotEmpty()) {
@@ -716,6 +755,7 @@ private fun LiveLogConsolePanel(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .background(headerBg)
                     .padding(horizontal = 12.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -732,7 +772,7 @@ private fun LiveLogConsolePanel(
                         text = "LIVE LOG CONSOLE",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF38BDF8),
+                        color = titleColor,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.width(6.dp))
@@ -740,7 +780,7 @@ private fun LiveLogConsolePanel(
                         text = "(${uiState.consoleLogs.size})",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF64748B)
+                        color = countColor
                     )
                 }
 
@@ -762,7 +802,7 @@ private fun LiveLogConsolePanel(
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
                             contentDescription = "Copy Console Logs",
-                            tint = Color(0xFF94A3B8),
+                            tint = iconTint,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -775,14 +815,14 @@ private fun LiveLogConsolePanel(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Clear Console Logs",
-                            tint = Color(0xFF94A3B8),
+                            tint = iconTint,
                             modifier = Modifier.size(15.dp)
                         )
                     }
                 }
             }
 
-            HorizontalDivider(color = Color(0xFF1E293B))
+            HorizontalDivider(color = dividerColor)
 
             // Expanded Log Stream List
             LazyColumn(
@@ -795,7 +835,7 @@ private fun LiveLogConsolePanel(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 items(uiState.consoleLogs, key = { it.id }) { entry ->
-                    ConsoleTimestampRow(entry = entry)
+                    ConsoleTimestampRow(entry = entry, isDark = isDark)
                 }
             }
         }
@@ -803,15 +843,30 @@ private fun LiveLogConsolePanel(
 }
 
 @Composable
-private fun ConsoleTimestampRow(entry: ConsoleLogEntry) {
-    val msgColor = when (entry.level) {
-        LogLevel.INIT -> Color(0xFF10B981)
-        LogLevel.CMD -> Color(0xFF38BDF8)
-        LogLevel.USB -> Color(0xFF60A5FA)
-        LogLevel.OKAY -> Color(0xFF34D399)
-        LogLevel.INFO -> Color(0xFFE2E8F0)
-        LogLevel.WARN -> Color(0xFFFACC15)
-        LogLevel.FAIL -> Color(0xFFEF4444)
+private fun ConsoleTimestampRow(
+    entry: ConsoleLogEntry,
+    isDark: Boolean
+) {
+    val msgColor = if (isDark) {
+        when (entry.level) {
+            LogLevel.INIT -> Color(0xFF10B981)
+            LogLevel.CMD -> Color(0xFF38BDF8)
+            LogLevel.USB -> Color(0xFF60A5FA)
+            LogLevel.OKAY -> Color(0xFF34D399)
+            LogLevel.INFO -> Color(0xFFE2E8F0)
+            LogLevel.WARN -> Color(0xFFFACC15)
+            LogLevel.FAIL -> Color(0xFFEF4444)
+        }
+    } else {
+        when (entry.level) {
+            LogLevel.INIT -> Color(0xFF047857)
+            LogLevel.CMD -> Color(0xFF0369A1)
+            LogLevel.USB -> Color(0xFF1D4ED8)
+            LogLevel.OKAY -> Color(0xFF059669)
+            LogLevel.INFO -> Color(0xFF1E293B)
+            LogLevel.WARN -> Color(0xFFB45309)
+            LogLevel.FAIL -> Color(0xFFDC2626)
+        }
     }
 
     Row(
@@ -841,6 +896,7 @@ private fun ConsoleTimestampRow(entry: ConsoleLogEntry) {
  */
 @Composable
 fun AboutCommandReferenceDialog(
+    isDark: Boolean = true,
     onDismiss: () -> Unit
 ) {
     var filterTab by remember { mutableIntStateOf(0) } // 0 = Fastboot, 1 = ADB
@@ -852,11 +908,25 @@ fun AboutCommandReferenceDialog(
         }
     }
 
+    val dialogBg = if (isDark) Color(0xFF0F172A) else Color(0xFFFFFFFF)
+    val titleColor = if (isDark) Color.White else Color(0xFF0F172A)
+    val subtitleColor = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+    val inactiveTabBg = if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9)
+    val inactiveTabText = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+    val itemBg = if (isDark) Color(0xFF1E293B) else Color(0xFFF8FAFC)
+    val itemBorder = if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1)
+    val itemTitleColor = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A)
+    val badgeBg = if (isDark) Color(0xFF0F172A) else Color(0xFFE0F2FE)
+    val badgeText = if (isDark) Color(0xFF38BDF8) else Color(0xFF0369A1)
+    val cmdTextColor = if (isDark) Color(0xFF34D399) else Color(0xFF047857)
+    val descColor = if (isDark) Color(0xFFCBD5E1) else Color(0xFF334155)
+    val closeColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color(0xFF0F172A),
-        titleContentColor = Color.White,
-        textContentColor = Color(0xFFE2E8F0),
+        containerColor = dialogBg,
+        titleContentColor = titleColor,
+        textContentColor = descColor,
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(
@@ -869,12 +939,12 @@ fun AboutCommandReferenceDialog(
                             text = "About & Command Reference",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
-                            color = Color.White
+                            color = titleColor
                         )
                         Text(
                             text = "FastDeck OTG • Android 10–16 Service Guide",
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFF94A3B8)
+                            color = subtitleColor
                         )
                     }
                 }
@@ -886,7 +956,7 @@ fun AboutCommandReferenceDialog(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (filterTab == 0) Color(0xFF10B981) else Color(0xFF1E293B),
+                        color = if (filterTab == 0) Color(0xFF10B981) else inactiveTabBg,
                         modifier = Modifier
                             .weight(1f)
                             .height(34.dp)
@@ -897,14 +967,14 @@ fun AboutCommandReferenceDialog(
                                 text = "Fastboot Commands",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = if (filterTab == 0) Color(0xFF052E16) else Color(0xFF94A3B8)
+                                color = if (filterTab == 0) Color(0xFF052E16) else inactiveTabText
                             )
                         }
                     }
 
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (filterTab == 1) Color(0xFF38BDF8) else Color(0xFF1E293B),
+                        color = if (filterTab == 1) Color(0xFF38BDF8) else inactiveTabBg,
                         modifier = Modifier
                             .weight(1f)
                             .height(34.dp)
@@ -915,7 +985,7 @@ fun AboutCommandReferenceDialog(
                                 text = "ADB Commands",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
-                                color = if (filterTab == 1) Color(0xFF082F49) else Color(0xFF94A3B8)
+                                color = if (filterTab == 1) Color(0xFF082F49) else inactiveTabText
                             )
                         }
                     }
@@ -933,8 +1003,8 @@ fun AboutCommandReferenceDialog(
                 items(filteredActions, key = { it.id }) { item ->
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = Color(0xFF1E293B),
-                        border = BorderStroke(1.dp, Color(0xFF334155)),
+                        color = itemBg,
+                        border = BorderStroke(1.dp, itemBorder),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(
@@ -950,18 +1020,18 @@ fun AboutCommandReferenceDialog(
                                     text = item.title,
                                     style = MaterialTheme.typography.labelMedium,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFFACC15),
+                                    color = itemTitleColor,
                                     modifier = Modifier.weight(1f)
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
                                     shape = RoundedCornerShape(4.dp),
-                                    color = Color(0xFF0F172A)
+                                    color = badgeBg
                                 ) {
                                     Text(
                                         text = item.brand.shortTag,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = Color(0xFF38BDF8),
+                                        color = badgeText,
                                         fontWeight = FontWeight.Bold,
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
@@ -971,14 +1041,14 @@ fun AboutCommandReferenceDialog(
                                 text = item.command,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF34D399)
+                                color = cmdTextColor
                             )
                             if (item.description.isNotEmpty()) {
                                 Text(
                                     text = item.description,
                                     style = MaterialTheme.typography.bodySmall,
                                     fontSize = 11.sp,
-                                    color = Color(0xFFCBD5E1)
+                                    color = descColor
                                 )
                             }
                         }
@@ -988,7 +1058,7 @@ fun AboutCommandReferenceDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("Close", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                Text("Close", color = closeColor, fontWeight = FontWeight.Bold)
             }
         }
     )

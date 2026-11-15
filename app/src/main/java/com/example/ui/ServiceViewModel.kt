@@ -51,7 +51,8 @@ data class ServiceUiState(
     val rawCommandInput: String = "",
     val consoleLogs: List<ConsoleLogEntry> = emptyList(),
     val terminalInput: String = "",
-    val terminalLines: List<TerminalLine> = emptyList()
+    val terminalLines: List<TerminalLine> = emptyList(),
+    val terminalHistory: List<String> = emptyList()
 )
 
 class ServiceViewModel(application: Application) : AndroidViewModel(application) {
@@ -320,9 +321,17 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         }
 
         appendTerminalLine("~ $ $cmd", isCommand = true)
+        _uiState.update { state ->
+            val updatedHistory = if (state.terminalHistory.lastOrNull() == cmd) {
+                state.terminalHistory
+            } else {
+                (state.terminalHistory + cmd).takeLast(50)
+            }
+            state.copy(terminalHistory = updatedHistory)
+        }
 
         if (cmd.equals("help", ignoreCase = true)) {
-            appendTerminalLine("fastboot devices | fastboot <cmd> | adb devices | adb shell <cmd> | clear")
+            appendTerminalLine("fastboot devices | fastboot <cmd> | adb devices | adb shell <cmd> | adb reboot | clear")
             return
         }
 
@@ -448,13 +457,21 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
 
     private fun handleCliTransportOutput(msg: String, level: LogLevel) {
         // Suppress verbose internal USB packet trace in CLI mode, keeping real device/CLI output only
-        if (level == LogLevel.USB &&
-            (msg.startsWith("TX (") || msg.startsWith("TX ->") || msg.startsWith("RX <-") ||
-                msg.startsWith("ADB USB TX") || msg.startsWith("ADB USB TX -> CNXN"))
+        if (msg.startsWith("TX (") ||
+            msg.startsWith("TX ->") ||
+            msg.startsWith("RX <-") ||
+            msg.startsWith("ADB USB TX -> CNXN") ||
+            msg.startsWith("ADB USB TX -> AUTH_SIGNATURE") ||
+            msg.startsWith("ADB USB TX -> OPEN") ||
+            msg.startsWith("ADB USB Connected:") ||
+            msg == "ADB stream closed (OKAY)."
         ) {
             return
         }
-        if (msg == "ADB stream closed (OKAY).") return
+        if (msg.startsWith("ADB USB TX -> AUTH_RSAPUBLICKEY")) {
+            appendTerminalLine("* Tap 'Allow USB Debugging' on target phone *", isError = false)
+            return
+        }
         appendTerminalLine(msg, isError = level == LogLevel.FAIL)
     }
 

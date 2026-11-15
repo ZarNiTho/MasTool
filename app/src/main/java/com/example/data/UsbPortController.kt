@@ -19,16 +19,21 @@ import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.InputStreamReader
+import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.PrivateKey
 import java.security.Signature
+import java.security.interfaces.RSAPrivateKey
+import java.security.interfaces.RSAPublicKey
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Locale
+import javax.crypto.Cipher
 
 class UsbPortController(private val context: Context) {
 
@@ -49,8 +54,74 @@ class UsbPortController(private val context: Context) {
         private const val ADB_AUTH_SIGNATURE = 2
         private const val ADB_AUTH_RSAPUBLICKEY = 3
 
+        private const val ADB_RSA_KEY_BITS = 2048
+        private const val ADB_RSA_MODULUS_WORDS = ADB_RSA_KEY_BITS / 32 // 64
+        private const val ADB_RSA_STRUCT_BYTES = 4 + 4 + (ADB_RSA_MODULUS_WORDS * 4) * 2 + 4 // 524
+
+        // ASN.1 SHA-1 DigestInfo prefix for 20-byte ADB auth token
+        private val SHA1_DIGEST_INFO_PREFIX = byteArrayOf(
+            0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2B, 0x0E,
+            0x03, 0x02, 0x1A, 0x05, 0x00, 0x04, 0x14
+        )
+
         // Fastboot Max Single Download Chunk (256 MB)
         private const val MAX_FASTBOOT_CHUNK = 256L * 1024L * 1024L
+
+        /**
+         * Encodes a 2048-bit RSAPublicKey into Android's exact 524-byte little-endian
+         * RSAPublicKey binary struct (libcrypto_utils android_pubkey_encode) so adbd
+         * properly verifies and persists it to /data/misc/adb/adb_keys when "Always allow" is checked.
+         */
+        internal fun encodeAdbPublicKeyStruct(pub: RSAPublicKey): ByteArray {
+            val n = pub.modulus
+            val r32 = BigInteger.ONE.shiftLeft(32)
+            val mask32 = r32.subtract(BigInteger.ONE)
+            val n0inv = r32.subtract(n.modInverse(r32)).and(mask32).toLong().toInt()
+            val rr = BigInteger.ONE.shiftLeft(ADB_RSA_KEY_BITS * 2).mod(n)
+
+            val buf = ByteBuffer.allocate(ADB_RSA_STRUCT_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+            buf.putInt(ADB_RSA_MODULUS_WORDS)
+            buf.putInt(n0inv)
+            for (i in 0 until ADB_RSA_MODULUS_WORDS) {
+                buf.putInt(n.shiftRight(i * 32).and(mask32).toLong().toInt())
+            }
+            for (i in 0 until ADB_RSA_MODULUS_WORDS) {
+                buf.putInt(rr.shiftRight(i * 32).and(mask32).toLong().toInt())
+            }
+            buf.putInt(pub.publicExponent.toInt())
+            return buf.array()
+        }
+
+        internal fun encodeAdbPublicKeyPayload(
+            pub: RSAPublicKey,
+            comment: String = "fastdeck@android"
+        ): ByteArray {
+            val structBytes = encodeAdbPublicKeyStruct(pub)
+            val base64Pub = Base64.encodeToString(structBytes, Base64.NO_WRAP)
+            return "$base64Pub $comment\u0000".toByteArray(StandardCharsets.US_ASCII)
+        }
+
+        internal fun signAdbTokenPayload(privateKey: PrivateKey, token: ByteArray): ByteArray {
+            val token20 = token.copyOf(20)
+            val digestInfo = SHA1_DIGEST_INFO_PREFIX + token20
+
+            try {
+                val sig = Signature.getInstance("NONEwithRSA")
+                sig.initSign(privateKey)
+                sig.update(digestInfo)
+                val out = sig.sign()
+                if (out.size == 256) return out
+            } catch (_: Exception) {
+            }
+
+            return try {
+                val cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding")
+                cipher.init(Cipher.ENCRYPT_MODE, privateKey)
+                cipher.doFinal(digestInfo)
+            } catch (_: Exception) {
+                ByteArray(256)
+            }
+        }
     }
 
     private val usbManager: UsbManager? =
@@ -338,13 +409,24 @@ class UsbPortController(private val context: Context) {
             // Step 2: Handle A_AUTH or A_CNXN response
             var connected = false
             var sentSignature = false
+            var sentPublicKey = false
+            var authWaitRetries = 0
             val keyPair = getOrCreateAdbRsaKeyPair()
 
-            for (attempt in 0 until 6) {
-                val pkt = readAdbPacket(connection, epIn, 3500) ?: break
+            for (attempt in 0 until 12) {
+                val readTimeout = if (sentPublicKey) 4000 else 3500
+                val pkt = readAdbPacket(connection, epIn, readTimeout)
+                if (pkt == null) {
+                    if (sentPublicKey && authWaitRetries < 3) {
+                        authWaitRetries++
+                        continue
+                    }
+                    break
+                }
                 when (pkt.command) {
                     A_CNXN -> {
-                        val remoteBanner = String(pkt.payload, StandardCharsets.UTF_8).trim { it <= ' ' || it == '\u0000' }
+                        val remoteBanner = String(pkt.payload, StandardCharsets.UTF_8)
+                            .trim { it <= ' ' || it == '\u0000' }
                         onLog("ADB USB Connected: $remoteBanner", LogLevel.OKAY)
                         connected = true
                         break
@@ -356,10 +438,14 @@ class UsbPortController(private val context: Context) {
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_SIGNATURE, 0, sig)
                                 sentSignature = true
                                 onLog("ADB USB TX -> AUTH_SIGNATURE (2048-bit RSA)", LogLevel.USB)
-                            } else {
+                            } else if (!sentPublicKey) {
                                 val pubKeyBytes = encodeAdbPublicKey(keyPair)
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_RSAPUBLICKEY, 0, pubKeyBytes)
-                                onLog("ADB USB TX -> AUTH_RSAPUBLICKEY. Please tap 'Allow USB Debugging' on target phone!", LogLevel.WARN)
+                                sentPublicKey = true
+                                onLog(
+                                    "ADB USB TX -> AUTH_RSAPUBLICKEY. Please tap 'Allow USB Debugging' on target phone!",
+                                    LogLevel.WARN
+                                )
                             }
                         }
                     }
@@ -371,29 +457,64 @@ class UsbPortController(private val context: Context) {
                 return
             }
 
-            // If command is just `adb devices -l`, we already verified connection
-            val lower = command.lowercase(Locale.US).trim()
-            if (lower.startsWith("adb devices")) {
+            // Route ADB host/service commands cleanly without falling into remote /system/bin/sh
+            val trimmedCmd = command.trim()
+            val lower = trimmedCmd.lowercase(Locale.US)
+            if (lower == "adb devices" || lower == "adb devices -l") {
                 onLog("${device.serialNumber ?: device.deviceName}\tdevice product:${device.productName}", LogLevel.OKAY)
                 return
             }
-
-            // Step 3: Build A_OPEN service string ("reboot:..." or "shell:...")
-            val serviceDest = when {
-                lower == "adb reboot" -> "reboot:\u0000"
-                lower.startsWith("adb reboot ") -> {
-                    val target = command.substringAfter("reboot ").trim()
-                    "reboot:$target\u0000"
-                }
-                else -> {
-                    val shellCmd = command
-                        .removePrefix("adb shell ")
-                        .removePrefix("shell ")
-                        .trim()
-                    "shell:$shellCmd\u0000"
-                }
+            if (lower == "adb get-state") {
+                onLog("device", LogLevel.OKAY)
+                return
+            }
+            if (lower == "adb get-serialno") {
+                onLog(device.serialNumber ?: device.deviceName, LogLevel.OKAY)
+                return
             }
 
+            val serviceDest: String = when {
+                lower == "adb" -> {
+                    onLog("Usage: adb devices | adb shell <cmd> | adb reboot [bootloader|recovery]", LogLevel.INFO)
+                    return
+                }
+                lower == "adb reboot" -> "reboot:\u0000"
+                lower.startsWith("adb reboot ") -> {
+                    val target = trimmedCmd.substringAfter("reboot ", "").trim()
+                    "reboot:$target\u0000"
+                }
+                lower == "adb root" -> "root:\u0000"
+                lower == "adb unroot" -> "unroot:\u0000"
+                lower == "adb remount" -> "remount:\u0000"
+                lower == "adb usb" -> "usb:\u0000"
+                lower.startsWith("adb tcpip ") -> {
+                    val port = trimmedCmd.substringAfter("tcpip ", "").trim()
+                    "tcpip:$port\u0000"
+                }
+                lower == "adb shell" -> {
+                    onLog("Usage: adb shell <command>", LogLevel.INFO)
+                    return
+                }
+                lower.startsWith("adb shell ") -> {
+                    val shellCmd = trimmedCmd.substring(10).trim()
+                    "shell:$shellCmd\u0000"
+                }
+                lower.startsWith("adb ") -> {
+                    val sub = trimmedCmd.substring(4).trim()
+                    onLog(
+                        "adb: unsupported subcommand '$sub'. Use 'adb shell <cmd>', 'adb reboot [target]', or 'adb devices'.",
+                        LogLevel.FAIL
+                    )
+                    return
+                }
+                lower.startsWith("shell ") -> {
+                    val shellCmd = trimmedCmd.substring(6).trim()
+                    "shell:$shellCmd\u0000"
+                }
+                else -> "shell:$trimmedCmd\u0000"
+            }
+
+            val isRebootService = serviceDest.startsWith("reboot:")
             val localId = 1
             sendAdbPacket(
                 connection,
@@ -407,11 +528,14 @@ class UsbPortController(private val context: Context) {
 
             // Step 4: Read A_OKAY / A_WRTE / A_CLSE stream output
             var remoteId = 0
-            for (loop in 0 until 64) {
-                val pkt = readAdbPacket(connection, epIn, 3000) ?: break
+            var streamOpened = false
+            for (loop in 0 until 128) {
+                val pktTimeout = if (isRebootService && streamOpened) 1200 else 3500
+                val pkt = readAdbPacket(connection, epIn, pktTimeout) ?: break
                 when (pkt.command) {
                     A_OKAY -> {
                         remoteId = pkt.arg0
+                        streamOpened = true
                     }
                     A_WRTE -> {
                         remoteId = pkt.arg0
@@ -427,6 +551,9 @@ class UsbPortController(private val context: Context) {
                         break
                     }
                 }
+            }
+            if (isRebootService && streamOpened) {
+                onLog("Reboot command accepted by target device.", LogLevel.OKAY)
             }
         } catch (e: Exception) {
             onLog("ADB USB error: ${e.message}", LogLevel.FAIL)
@@ -553,7 +680,11 @@ class UsbPortController(private val context: Context) {
         timeoutMs: Int
     ): AdbPacket? {
         val hdr = ByteArray(24)
-        val rx = connection.bulkTransfer(epIn, hdr, hdr.size, timeoutMs)
+        var rx = -1
+        for (zlpRetry in 0 until 3) {
+            rx = connection.bulkTransfer(epIn, hdr, hdr.size, timeoutMs)
+            if (rx != 0) break
+        }
         if (rx != 24) return null
 
         val bb = ByteBuffer.wrap(hdr).order(ByteOrder.LITTLE_ENDIAN)
@@ -567,9 +698,16 @@ class UsbPortController(private val context: Context) {
         val payload = if (len in 1..MAX_ADB_DATA) {
             val data = ByteArray(len)
             var total = 0
+            var zeroReads = 0
             while (total < len) {
                 val r = connection.bulkTransfer(epIn, data, total, len - total, timeoutMs)
-                if (r <= 0) break
+                if (r < 0) break
+                if (r == 0) {
+                    zeroReads++
+                    if (zeroReads >= 3) break
+                    continue
+                }
+                zeroReads = 0
                 total += r
             }
             data
@@ -587,12 +725,14 @@ class UsbPortController(private val context: Context) {
                 val kf = KeyFactory.getInstance("RSA")
                 val priv = kf.generatePrivate(PKCS8EncodedKeySpec(privFile.readBytes()))
                 val pub = kf.generatePublic(X509EncodedKeySpec(pubFile.readBytes()))
-                return KeyPair(pub, priv)
+                if (pub is RSAPublicKey && priv is RSAPrivateKey && pub.modulus.bitLength() == ADB_RSA_KEY_BITS) {
+                    return KeyPair(pub, priv)
+                }
             } catch (_: Exception) {
             }
         }
         val kpg = KeyPairGenerator.getInstance("RSA")
-        kpg.initialize(2048)
+        kpg.initialize(ADB_RSA_KEY_BITS)
         val kp = kpg.generateKeyPair()
         try {
             privFile.writeBytes(kp.private.encoded)
@@ -603,24 +743,13 @@ class UsbPortController(private val context: Context) {
     }
 
     private fun signAdbToken(keyPair: KeyPair, token: ByteArray): ByteArray {
-        return try {
-            val sig = Signature.getInstance("NONEwithRSA")
-            sig.initSign(keyPair.private)
-            // ASN.1 SHA-1 DigestInfo prefix for 20-byte ADB token
-            val sha1Prefix = byteArrayOf(
-                0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2B, 0x0E,
-                0x03, 0x02, 0x1A, 0x05, 0x00, 0x04, 0x14
-            )
-            sig.update(sha1Prefix + token.take(20).toByteArray())
-            sig.sign()
-        } catch (_: Exception) {
-            ByteArray(256)
-        }
+        return signAdbTokenPayload(keyPair.private, token)
     }
 
     private fun encodeAdbPublicKey(keyPair: KeyPair): ByteArray {
-        val base64Pub = Base64.encodeToString(keyPair.public.encoded, Base64.NO_WRAP)
-        return "$base64Pub fastdeck@android\u0000".toByteArray(StandardCharsets.US_ASCII)
+        val rsaPub = keyPair.public as? RSAPublicKey
+            ?: throw IllegalStateException("ADB RSA public key required")
+        return encodeAdbPublicKeyPayload(rsaPub)
     }
 
     private fun inspectDevice(manager: UsbManager, device: UsbDevice): UsbPortInfo {

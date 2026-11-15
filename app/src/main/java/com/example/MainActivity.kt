@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -111,15 +112,14 @@ class MainActivity : ComponentActivity() {
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val isDark = uiState.themeMode == ThemeMode.DARK
-            val isTerminal = uiState.screenMode == ToolScreenMode.CMD_TERMINAL
             val view = LocalView.current
 
             if (!view.isInEditMode) {
                 SideEffect {
                     val window = (view.context as? Activity)?.window ?: return@SideEffect
                     val controller = WindowCompat.getInsetsController(window, view)
-                    controller.isAppearanceLightStatusBars = !isDark && !isTerminal
-                    controller.isAppearanceLightNavigationBars = !isDark && !isTerminal
+                    controller.isAppearanceLightStatusBars = !isDark
+                    controller.isAppearanceLightNavigationBars = !isDark
                 }
             }
 
@@ -149,6 +149,7 @@ fun FastDeckRootApp(
     val context = LocalContext.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val isDark = uiState.themeMode == ThemeMode.DARK
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -196,8 +197,8 @@ fun FastDeckRootApp(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = Color(0xFF0B101B),
-                drawerContentColor = Color.White,
+                drawerContainerColor = if (isDark) Color(0xFF0B101B) else Color(0xFFF8FAFC),
+                drawerContentColor = if (isDark) Color.White else Color(0xFF0F172A),
                 windowInsets = WindowInsets.safeDrawing,
                 modifier = Modifier
                     .fillMaxWidth(0.84f)
@@ -205,6 +206,7 @@ fun FastDeckRootApp(
             ) {
                 AdbFastbootDrawerContent(
                     uiState = uiState,
+                    isDark = isDark,
                     onSelectMode = { mode ->
                         viewModel.navigateToMode(mode)
                         scope.launch { drawerState.close() }
@@ -220,6 +222,7 @@ fun FastDeckRootApp(
     ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
+            containerColor = if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9),
             contentWindowInsets = WindowInsets.safeDrawing,
             topBar = {
                 ToolHeaderTopBar(
@@ -246,6 +249,7 @@ fun FastDeckRootApp(
         ) { innerPadding ->
             if (uiState.showAboutDialog) {
                 AboutCommandReferenceDialog(
+                    isDark = isDark,
                     onDismiss = { viewModel.setShowAboutDialog(false) }
                 )
             }
@@ -254,7 +258,9 @@ fun FastDeckRootApp(
                     uiState = uiState,
                     onTerminalInputChange = { viewModel.updateTerminalInput(it) },
                     onSubmitCommand = { viewModel.submitTerminalCommand(it) },
-                    modifier = Modifier.padding(innerPadding)
+                    modifier = Modifier
+                        .padding(innerPadding)
+                        .consumeWindowInsets(innerPadding)
                 )
             } else {
                 WorkbenchScreen(
@@ -276,7 +282,9 @@ fun FastDeckRootApp(
                     onRawCommandChange = { viewModel.updateRawCommandInput(it) },
                     onClearLogs = { viewModel.clearLogs() },
                     onDismissAbout = { viewModel.setShowAboutDialog(false) },
-                    modifier = Modifier.padding(innerPadding)
+                    modifier = Modifier
+                        .padding(innerPadding)
+                        .consumeWindowInsets(innerPadding)
                 )
             }
         }
@@ -293,18 +301,25 @@ private fun ToolHeaderTopBar(
     onToggleTheme: () -> Unit
 ) {
     val isTerminal = uiState.screenMode == ToolScreenMode.CMD_TERMINAL
-    val isDark = isTerminal || uiState.themeMode == ThemeMode.DARK
+    val isDark = uiState.themeMode == ThemeMode.DARK
     val barBg = when {
-        isTerminal -> Color(0xFF000000)
+        isTerminal && isDark -> Color(0xFF000000)
+        isTerminal && !isDark -> Color(0xFFFFFFFF)
         isDark -> Color(0xFF070B14)
         else -> Color(0xFFFFFFFF)
     }
     val badgeBorderColor = when (uiState.screenMode) {
-        ToolScreenMode.FASTBOOT_ONECLICK -> Color(0xFF10B981)
-        ToolScreenMode.FASTBOOT_FLASH -> Color(0xFFEF4444)
-        ToolScreenMode.ADB_ONECLICK -> Color(0xFF38BDF8)
-        ToolScreenMode.CMD_TERMINAL -> Color(0xFFF59E0B)
+        ToolScreenMode.FASTBOOT_ONECLICK -> if (isDark) Color(0xFF10B981) else Color(0xFF059669)
+        ToolScreenMode.FASTBOOT_FLASH -> if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626)
+        ToolScreenMode.ADB_ONECLICK -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+        ToolScreenMode.CMD_TERMINAL -> if (isDark) Color(0xFFF59E0B) else Color(0xFFD97706)
     }
+
+    val usbBg = if (isDark) Color(0xFF1E1B4B) else Color(0xFFEEF2FF)
+    val usbBorder = if (isDark) Color(0xFF4F46E5) else Color(0xFF6366F1)
+    val usbIconTint = if (isDark) Color(0xFF818CF8) else Color(0xFF4338CA)
+    val usbTextColor = if (isDark) Color.White else Color(0xFF312E81)
+    val infoTint = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
     Surface(
         color = barBg,
@@ -329,13 +344,13 @@ private fun ToolHeaderTopBar(
                     IconButton(
                         onClick = onOpenDrawer,
                         modifier = Modifier
-                            .size(34.dp)
+                            .size(36.dp)
                             .testTag("drawer_menu_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Open Menu",
-                            tint = if (isDark) Color.White else Color.Black
+                            tint = if (isDark) Color.White else Color(0xFF0F172A)
                         )
                     }
 
@@ -343,7 +358,7 @@ private fun ToolHeaderTopBar(
 
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = badgeBorderColor.copy(alpha = 0.14f),
+                        color = badgeBorderColor.copy(alpha = if (isDark) 0.14f else 0.10f),
                         border = BorderStroke(1.dp, badgeBorderColor),
                         modifier = Modifier
                             .heightIn(min = 32.dp)
@@ -367,7 +382,7 @@ private fun ToolHeaderTopBar(
                             Text(
                                 text = uiState.screenMode.badgeTitle,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (isDark) Color.White else Color.Black,
+                                color = if (isDark) Color.White else Color(0xFF0F172A),
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -382,8 +397,8 @@ private fun ToolHeaderTopBar(
                     val firstPort = uiState.usbPorts.firstOrNull()
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = Color(0xFF1E1B4B),
-                        border = BorderStroke(1.dp, Color(0xFF4F46E5)),
+                        color = usbBg,
+                        border = BorderStroke(1.dp, usbBorder),
                         modifier = Modifier
                             .heightIn(min = 32.dp)
                             .clickable { onUsbBadgeClick() }
@@ -396,7 +411,7 @@ private fun ToolHeaderTopBar(
                             Icon(
                                 imageVector = Icons.Default.Usb,
                                 contentDescription = "USB OTG Status",
-                                tint = Color(0xFF818CF8),
+                                tint = usbIconTint,
                                 modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -408,7 +423,7 @@ private fun ToolHeaderTopBar(
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 10.sp,
-                                color = Color.White,
+                                color = usbTextColor,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -422,34 +437,40 @@ private fun ToolHeaderTopBar(
                         IconButton(
                             onClick = onOpenAbout,
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(34.dp)
                                 .testTag("topbar_about_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Info,
                                 contentDescription = "About Commands",
-                                tint = Color(0xFF38BDF8),
-                                modifier = Modifier.size(17.dp)
+                                tint = infoTint,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
 
                         IconButton(
                             onClick = onToggleTheme,
                             modifier = Modifier
-                                .size(32.dp)
+                                .size(34.dp)
                                 .testTag("topbar_theme_toggle")
                         ) {
                             Icon(
                                 imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
                                 contentDescription = "Toggle Light or Dark Theme",
                                 tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
-                                modifier = Modifier.size(17.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
                 }
             }
-            HorizontalDivider(color = if (isTerminal) Color(0xFF1A1A1A) else if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1))
+            HorizontalDivider(
+                color = when {
+                    isTerminal && isDark -> Color(0xFF1A1A1A)
+                    isDark -> Color(0xFF1E293B)
+                    else -> Color(0xFFCBD5E1)
+                }
+            )
         }
     }
 }
@@ -457,12 +478,20 @@ private fun ToolHeaderTopBar(
 @Composable
 private fun AdbFastbootDrawerContent(
     uiState: ServiceUiState,
+    isDark: Boolean,
     onSelectMode: (ToolScreenMode) -> Unit,
     onOpenAbout: () -> Unit,
     onToggleTheme: () -> Unit
 ) {
     var fastbootExpanded by remember { mutableStateOf(true) }
     val firstPort = uiState.usbPorts.firstOrNull()
+
+    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
+    val secondaryText = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+    val cardBg = if (isDark) Color(0xFF111827) else Color(0xFFFFFFFF)
+    val cardBorder = if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1)
+    val statusBoxBg = if (isDark) Color(0xFF131B2E) else Color(0xFFF1F5F9)
+    val accentBlue = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
     Column(
         modifier = Modifier
@@ -487,14 +516,14 @@ private fun AdbFastbootDrawerContent(
                         text = "NATIVE UNLOCK TOOL",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = Color.White,
+                        color = primaryText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Multi-Brand USB OTG Platform",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF64748B),
+                        color = secondaryText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -516,8 +545,8 @@ private fun AdbFastbootDrawerContent(
 
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF131B2E),
-                border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                color = statusBoxBg,
+                border = BorderStroke(1.dp, cardBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -544,7 +573,7 @@ private fun AdbFastbootDrawerContent(
                             text = firstPort?.productName?.uppercase() ?: "WAITING USB OTG",
                             style = MaterialTheme.typography.labelMedium,
                             fontFamily = FontFamily.Monospace,
-                            color = Color(0xFF94A3B8),
+                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF334155),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -554,7 +583,7 @@ private fun AdbFastbootDrawerContent(
                         text = firstPort?.vendorHex ?: "0x18D1",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF38BDF8),
+                        color = accentBlue,
                         fontWeight = FontWeight.Bold
                     )
                 }
@@ -562,8 +591,8 @@ private fun AdbFastbootDrawerContent(
 
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = Color(0xFF111827),
-                border = BorderStroke(1.dp, Color(0xFF1E293B)),
+                color = cardBg,
+                border = BorderStroke(1.dp, cardBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -580,14 +609,14 @@ private fun AdbFastbootDrawerContent(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFF3B1821),
+                                color = if (isDark) Color(0xFF3B1821) else Color(0xFFFEE2E2),
                                 modifier = Modifier.size(36.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
                                         imageVector = Icons.Default.Bolt,
                                         contentDescription = null,
-                                        tint = Color(0xFFEF4444),
+                                        tint = if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626),
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
@@ -599,14 +628,14 @@ private fun AdbFastbootDrawerContent(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color.White,
+                                    color = primaryText,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
                                     text = "Bootloader / Fastbootd / Flash",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF64748B),
+                                    color = secondaryText,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -615,21 +644,22 @@ private fun AdbFastbootDrawerContent(
                         Icon(
                             imageVector = Icons.Default.ExpandMore,
                             contentDescription = null,
-                            tint = Color(0xFFEF4444)
+                            tint = if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626)
                         )
                     }
 
                     if (fastbootExpanded) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = Color(0xFF1E293B))
+                        HorizontalDivider(color = cardBorder)
                         Spacer(modifier = Modifier.height(8.dp))
 
                         DrawerSubItem(
                             icon = Icons.Default.LockOpen,
-                            iconTint = Color(0xFFFACC15),
+                            iconTint = if (isDark) Color(0xFFFACC15) else Color(0xFFD97706),
                             title = "Fastboot One-Click",
                             subtitle = "Bootloader Unlock, FRP & OEM Service",
                             selected = uiState.screenMode == ToolScreenMode.FASTBOOT_ONECLICK,
+                            isDark = isDark,
                             onClick = { onSelectMode(ToolScreenMode.FASTBOOT_ONECLICK) }
                         )
 
@@ -637,10 +667,11 @@ private fun AdbFastbootDrawerContent(
 
                         DrawerSubItem(
                             icon = Icons.Default.Bolt,
-                            iconTint = Color(0xFF38BDF8),
+                            iconTint = accentBlue,
                             title = "Flash Tool",
                             subtitle = ".img / .bat / UPDATE.APP USB Flasher",
                             selected = uiState.screenMode == ToolScreenMode.FASTBOOT_FLASH,
+                            isDark = isDark,
                             onClick = { onSelectMode(ToolScreenMode.FASTBOOT_FLASH) }
                         )
                     }
@@ -649,12 +680,15 @@ private fun AdbFastbootDrawerContent(
 
             DrawerPrimaryCard(
                 icon = Icons.Default.PhoneAndroid,
-                iconBg = Color(0xFF064E3B),
-                iconTint = Color(0xFF10B981),
+                iconBg = if (isDark) Color(0xFF064E3B) else Color(0xFFD1FAE5),
+                iconTint = if (isDark) Color(0xFF10B981) else Color(0xFF059669),
+                cardBg = cardBg,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
                 borderColor = if (uiState.screenMode == ToolScreenMode.ADB_ONECLICK) {
                     Color(0xFF10B981)
                 } else {
-                    Color(0xFF1E293B)
+                    cardBorder
                 },
                 title = "ADB One-Click Service",
                 subtitle = "ADB System Info, Debloat & Reboots",
@@ -663,12 +697,15 @@ private fun AdbFastbootDrawerContent(
 
             DrawerPrimaryCard(
                 icon = Icons.Default.DeveloperBoard,
-                iconBg = Color(0xFF1E3A8A),
-                iconTint = Color(0xFF38BDF8),
+                iconBg = if (isDark) Color(0xFF1E3A8A) else Color(0xFFE0F2FE),
+                iconTint = accentBlue,
+                cardBg = cardBg,
+                primaryText = primaryText,
+                secondaryText = secondaryText,
                 borderColor = if (uiState.screenMode == ToolScreenMode.CMD_TERMINAL) {
-                    Color(0xFF38BDF8)
+                    accentBlue
                 } else {
-                    Color(0xFF1E293B)
+                    cardBorder
                 },
                 title = "Dedicated Terminal",
                 subtitle = "Custom Command Execution Shell",
@@ -677,7 +714,7 @@ private fun AdbFastbootDrawerContent(
         }
 
         Column {
-            HorizontalDivider(color = Color(0xFF1E293B))
+            HorizontalDivider(color = cardBorder)
             Spacer(modifier = Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -688,7 +725,7 @@ private fun AdbFastbootDrawerContent(
                     text = "Android Native USB Engine",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFF64748B)
+                    color = secondaryText
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -701,20 +738,23 @@ private fun AdbFastbootDrawerContent(
                             .testTag("drawer_theme_toggle")
                     ) {
                         Icon(
-                            imageVector = if (uiState.themeMode == ThemeMode.DARK) {
-                                Icons.Default.LightMode
-                            } else {
-                                Icons.Default.DarkMode
-                            },
+                            imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Toggle Theme",
-                            tint = Color(0xFFFACC15),
-                            modifier = Modifier.size(15.dp)
+                            tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isDark) "Light" else "Dark",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = primaryText,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
                         text = "About",
                         style = MaterialTheme.typography.labelMedium,
-                        color = Color(0xFF38BDF8),
+                        color = accentBlue,
                         fontWeight = FontWeight.Bold,
                         modifier = Modifier
                             .clickable { onOpenAbout() }
@@ -733,11 +773,16 @@ private fun DrawerSubItem(
     title: String,
     subtitle: String,
     selected: Boolean,
+    isDark: Boolean,
     onClick: () -> Unit
 ) {
+    val selectedBg = if (isDark) Color(0xFF1E293B) else Color(0xFFE2E8F0)
+    val titleColor = if (isDark) Color.White else Color(0xFF0F172A)
+    val subColor = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (selected) Color(0xFF1E293B) else Color.Transparent,
+        color = if (selected) selectedBg else Color.Transparent,
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
@@ -758,14 +803,14 @@ private fun DrawerSubItem(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White,
+                    color = titleColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color(0xFF64748B),
+                    color = subColor,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -779,6 +824,9 @@ private fun DrawerPrimaryCard(
     icon: ImageVector,
     iconBg: Color,
     iconTint: Color,
+    cardBg: Color,
+    primaryText: Color,
+    secondaryText: Color,
     borderColor: Color,
     title: String,
     subtitle: String,
@@ -786,7 +834,7 @@ private fun DrawerPrimaryCard(
 ) {
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = Color(0xFF111827),
+        color = cardBg,
         border = BorderStroke(1.dp, borderColor),
         modifier = Modifier
             .fillMaxWidth()
@@ -824,14 +872,14 @@ private fun DrawerPrimaryCard(
                         style = MaterialTheme.typography.titleMedium,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White,
+                        color = primaryText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xFF64748B),
+                        color = secondaryText,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -840,7 +888,7 @@ private fun DrawerPrimaryCard(
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
-                tint = Color(0xFF64748B)
+                tint = secondaryText
             )
         }
     }
