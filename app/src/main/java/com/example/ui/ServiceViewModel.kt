@@ -13,9 +13,11 @@ import com.example.model.LogLevel
 import com.example.model.SelectedFlashFile
 import com.example.model.ServiceActionItem
 import com.example.model.ServiceBrand
+import com.example.model.TerminalLine
 import com.example.model.ThemeMode
 import com.example.model.ToolScreenMode
 import com.example.model.UsbPortInfo
+import com.example.model.UsbProtocolType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,13 +49,16 @@ data class ServiceUiState(
     val statusBarText: String = "Direct USB OTG Host Ready",
     val progressPercent: Float = 0f,
     val rawCommandInput: String = "",
-    val consoleLogs: List<ConsoleLogEntry> = emptyList()
+    val consoleLogs: List<ConsoleLogEntry> = emptyList(),
+    val terminalInput: String = "",
+    val terminalLines: List<TerminalLine> = emptyList()
 )
 
 class ServiceViewModel(application: Application) : AndroidViewModel(application) {
 
     private val usbController = UsbPortController(application.applicationContext)
     private val logSequence = AtomicLong(1L)
+    private val terminalSequence = AtomicLong(1L)
 
     private val _uiState = MutableStateFlow(ServiceUiState())
     val uiState: StateFlow<ServiceUiState> = _uiState.asStateFlow()
@@ -279,14 +284,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         val state = _uiState.value
         when (state.screenMode) {
             ToolScreenMode.FASTBOOT_FLASH -> executeDirectUsbFlash()
-            ToolScreenMode.CMD_TERMINAL -> {
-                val input = state.rawCommandInput.trim()
-                if (input.isEmpty()) {
-                    appendLog("TERM", "Enter a command in the terminal box first.", LogLevel.WARN)
-                } else {
-                    executeCommand(input)
-                }
-            }
+            ToolScreenMode.CMD_TERMINAL -> submitTerminalCommand(state.terminalInput)
             ToolScreenMode.FASTBOOT_ONECLICK, ToolScreenMode.ADB_ONECLICK -> {
                 appendLog(
                     tag = "START",
@@ -295,6 +293,180 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                 )
                 executeCommand(state.selectedAction.command, logRawCommand = false)
             }
+        }
+    }
+
+    fun updateTerminalInput(input: String) {
+        _uiState.update { it.copy(terminalInput = input) }
+    }
+
+    /**
+     * Executes pure Termux-style CLI commands strictly inside the dedicated Terminal screen
+     * without mixing One-Click logs or timestamps.
+     */
+    fun submitTerminalCommand(rawCmd: String) {
+        if (_uiState.value.isBusy) return
+        val cmd = rawCmd.trim()
+        _uiState.update { it.copy(terminalInput = "") }
+
+        if (cmd.isEmpty()) {
+            appendTerminalLine("~ $ ", isCommand = true)
+            return
+        }
+
+        if (cmd.equals("clear", ignoreCase = true) || cmd.equals("cls", ignoreCase = true)) {
+            _uiState.update { it.copy(terminalLines = emptyList()) }
+            return
+        }
+
+        appendTerminalLine("~ $ $cmd", isCommand = true)
+
+        if (cmd.equals("help", ignoreCase = true)) {
+            appendTerminalLine("fastboot devices | fastboot <cmd> | adb devices | adb shell <cmd> | clear")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true) }
+
+            withContext(Dispatchers.IO) {
+                val lower = cmd.lowercase(Locale.US)
+                val ports = usbController.scanPorts()
+                val activePort = ports.firstOrNull {
+                    if (lower.startsWith("fastboot")) {
+                        it.protocolType == UsbProtocolType.FASTBOOT
+                    } else if (lower.startsWith("adb")) {
+                        it.protocolType == UsbProtocolType.ADB
+                    } else {
+                        true
+                    }
+                } ?: ports.firstOrNull()
+
+                if (activePort != null) {
+                    _uiState.update { it.copy(usbPorts = ports, selectedPortName = activePort.deviceName) }
+                }
+
+                when {
+                    lower == "fastboot devices" || lower == "fastboot devices -l" -> {
+                        val fbPorts = ports.filter { it.protocolType == UsbProtocolType.FASTBOOT }
+                        if (fbPorts.isEmpty()) {
+                            // no output on real fastboot devices if empty, or show clean status
+                            if (ports.isNotEmpty()) {
+                                ports.forEach { p ->
+                                    appendTerminalLine("${p.serialNumber}\t${p.protocolType.label}")
+                                }
+                            }
+                        } else {
+                            fbPorts.forEach { p ->
+                                appendTerminalLine("${p.serialNumber}\tfastboot")
+                            }
+                        }
+                    }
+
+                    lower == "adb devices" || lower == "adb devices -l" -> {
+                        appendTerminalLine("List of devices attached")
+                        val adbPorts = ports.filter { it.protocolType == UsbProtocolType.ADB }
+                        adbPorts.forEach { p ->
+                            val status = if (p.hasPermission) "device" else "unauthorized"
+                            appendTerminalLine("${p.serialNumber}\t$status")
+                            if (!p.hasPermission) {
+                                usbController.requestPermission(p.deviceName)
+                            }
+                        }
+                    }
+
+                    lower.startsWith("fastboot ") -> {
+                        val portName = activePort?.deviceName
+                        if (portName == null) {
+                            appendTerminalLine("< waiting for any device >", isError = true)
+                        } else {
+                            val tokens = cmd.split(Regex("\\s+"))
+                            val flashIdx = tokens.indexOfFirst { it.equals("flash", ignoreCase = true) }
+                            val loadedFile = _uiState.value.selectedFlashFile
+                            if (flashIdx >= 0 && flashIdx + 1 < tokens.size && loadedFile != null) {
+                                val targetPart = tokens[flashIdx + 1]
+                                val uri = Uri.parse(loadedFile.uriString)
+                                usbController.flashBinaryStreamOverUsb(
+                                    deviceName = portName,
+                                    uri = uri,
+                                    partition = targetPart,
+                                    dataOffset = 0L,
+                                    dataSize = loadedFile.fileSizeBytes,
+                                    disableVerity = _uiState.value.disableVerity,
+                                    onProgress = {},
+                                    onLog = { msg, lvl -> handleCliTransportOutput(msg, lvl) }
+                                )
+                            } else {
+                                val wireList = toFastbootWireProtocolList(cmd)
+                                usbController.executeFastbootWireCommands(
+                                    deviceName = portName,
+                                    wireCommands = wireList,
+                                    onLog = { msg, lvl -> handleCliTransportOutput(msg, lvl) }
+                                )
+                            }
+                        }
+                    }
+
+                    lower == "adb" || lower.startsWith("adb ") -> {
+                        val portName = activePort?.deviceName
+                        if (portName == null) {
+                            appendTerminalLine("error: no devices/emulators found", isError = true)
+                        } else {
+                            usbController.executeAdbOverUsbOtg(
+                                deviceName = portName,
+                                command = cmd,
+                                onLog = { msg, lvl -> handleCliTransportOutput(msg, lvl) }
+                            )
+                        }
+                    }
+
+                    else -> {
+                        val portName = activePort?.deviceName
+                        if (portName != null && activePort.protocolType == UsbProtocolType.ADB) {
+                            usbController.executeAdbOverUsbOtg(
+                                deviceName = portName,
+                                command = cmd,
+                                onLog = { msg, lvl -> handleCliTransportOutput(msg, lvl) }
+                            )
+                        } else {
+                            usbController.executeLocalShell(
+                                command = cmd,
+                                onLog = { msg, lvl ->
+                                    if (!msg.startsWith("Local Shell Exit 0")) {
+                                        appendTerminalLine(msg, isError = lvl == LogLevel.FAIL)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            _uiState.update { it.copy(isBusy = false) }
+        }
+    }
+
+    private fun handleCliTransportOutput(msg: String, level: LogLevel) {
+        // Suppress verbose internal USB packet trace in CLI mode, keeping real device/CLI output only
+        if (level == LogLevel.USB &&
+            (msg.startsWith("TX (") || msg.startsWith("TX ->") || msg.startsWith("RX <-") ||
+                msg.startsWith("ADB USB TX") || msg.startsWith("ADB USB TX -> CNXN"))
+        ) {
+            return
+        }
+        if (msg == "ADB stream closed (OKAY).") return
+        appendTerminalLine(msg, isError = level == LogLevel.FAIL)
+    }
+
+    private fun appendTerminalLine(text: String, isCommand: Boolean = false, isError: Boolean = false) {
+        val entry = TerminalLine(
+            id = terminalSequence.getAndIncrement(),
+            text = text,
+            isCommand = isCommand,
+            isError = isError
+        )
+        _uiState.update { s ->
+            s.copy(terminalLines = (s.terminalLines + entry).takeLast(500))
         }
     }
 

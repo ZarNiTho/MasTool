@@ -130,3 +130,10 @@ data class ConsoleLogEntry(
     val message: String,
     val level: LogLevel
 )
+
+data class TerminalLine(
+    val id: Long,
+    val text: String,
+    val isCommand: Boolean = false,
+    val isError: Boolean = false
+)

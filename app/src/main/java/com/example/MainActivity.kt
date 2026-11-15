@@ -9,6 +9,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -91,6 +92,8 @@ import com.example.model.ThemeMode
 import com.example.model.ToolScreenMode
 import com.example.ui.ServiceUiState
 import com.example.ui.ServiceViewModel
+import com.example.ui.screens.AboutCommandReferenceDialog
+import com.example.ui.screens.FullscreenCliTerminalScreen
 import com.example.ui.screens.WorkbenchScreen
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
@@ -108,14 +111,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
             val isDark = uiState.themeMode == ThemeMode.DARK
+            val isTerminal = uiState.screenMode == ToolScreenMode.CMD_TERMINAL
             val view = LocalView.current
 
             if (!view.isInEditMode) {
                 SideEffect {
                     val window = (view.context as? Activity)?.window ?: return@SideEffect
                     val controller = WindowCompat.getInsetsController(window, view)
-                    controller.isAppearanceLightStatusBars = !isDark
-                    controller.isAppearanceLightNavigationBars = !isDark
+                    controller.isAppearanceLightStatusBars = !isDark && !isTerminal
+                    controller.isAppearanceLightNavigationBars = !isDark && !isTerminal
                 }
             }
 
@@ -184,6 +188,10 @@ fun FastDeckRootApp(
         }
     }
 
+    BackHandler(enabled = uiState.screenMode != ToolScreenMode.FASTBOOT_ONECLICK && !drawerState.isOpen) {
+        viewModel.navigateToMode(ToolScreenMode.FASTBOOT_ONECLICK)
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -236,27 +244,41 @@ fun FastDeckRootApp(
                 )
             }
         ) { innerPadding ->
-            WorkbenchScreen(
-                uiState = uiState,
-                availableActions = viewModel.getAvailableActions(),
-                onSelectBrand = { viewModel.setBrand(it) },
-                onSelectActionGroup = { viewModel.setActionGroup(it) },
-                onSelectAction = { viewModel.setSelectedAction(it) },
-                onSelectPartition = { viewModel.setPartition(it) },
-                onToggleVerity = { viewModel.toggleDisableVerity() },
-                onToggleAutoReboot = { viewModel.toggleAutoReboot() },
-                onToggleChecksum = { viewModel.toggleChecksum() },
-                onToggleFastbootd = { viewModel.toggleUseFastbootd() },
-                onToggleStep = { viewModel.toggleFlashStep(it) },
-                onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
-                onScanPorts = { viewModel.scanUsbPorts() },
-                onStartPressed = { viewModel.onStartPressed() },
-                onExecuteCommand = { viewModel.executeCommand(it) },
-                onRawCommandChange = { viewModel.updateRawCommandInput(it) },
-                onClearLogs = { viewModel.clearLogs() },
-                onDismissAbout = { viewModel.setShowAboutDialog(false) },
-                modifier = Modifier.padding(innerPadding)
-            )
+            if (uiState.showAboutDialog) {
+                AboutCommandReferenceDialog(
+                    onDismiss = { viewModel.setShowAboutDialog(false) }
+                )
+            }
+            if (uiState.screenMode == ToolScreenMode.CMD_TERMINAL) {
+                FullscreenCliTerminalScreen(
+                    uiState = uiState,
+                    onTerminalInputChange = { viewModel.updateTerminalInput(it) },
+                    onSubmitCommand = { viewModel.submitTerminalCommand(it) },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            } else {
+                WorkbenchScreen(
+                    uiState = uiState,
+                    availableActions = viewModel.getAvailableActions(),
+                    onSelectBrand = { viewModel.setBrand(it) },
+                    onSelectActionGroup = { viewModel.setActionGroup(it) },
+                    onSelectAction = { viewModel.setSelectedAction(it) },
+                    onSelectPartition = { viewModel.setPartition(it) },
+                    onToggleVerity = { viewModel.toggleDisableVerity() },
+                    onToggleAutoReboot = { viewModel.toggleAutoReboot() },
+                    onToggleChecksum = { viewModel.toggleChecksum() },
+                    onToggleFastbootd = { viewModel.toggleUseFastbootd() },
+                    onToggleStep = { viewModel.toggleFlashStep(it) },
+                    onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+                    onScanPorts = { viewModel.scanUsbPorts() },
+                    onStartPressed = { viewModel.onStartPressed() },
+                    onExecuteCommand = { viewModel.executeCommand(it) },
+                    onRawCommandChange = { viewModel.updateRawCommandInput(it) },
+                    onClearLogs = { viewModel.clearLogs() },
+                    onDismissAbout = { viewModel.setShowAboutDialog(false) },
+                    modifier = Modifier.padding(innerPadding)
+                )
+            }
         }
     }
 }
@@ -270,8 +292,13 @@ private fun ToolHeaderTopBar(
     onOpenAbout: () -> Unit,
     onToggleTheme: () -> Unit
 ) {
-    val isDark = uiState.themeMode == ThemeMode.DARK
-    val barBg = if (isDark) Color(0xFF070B14) else Color(0xFFFFFFFF)
+    val isTerminal = uiState.screenMode == ToolScreenMode.CMD_TERMINAL
+    val isDark = isTerminal || uiState.themeMode == ThemeMode.DARK
+    val barBg = when {
+        isTerminal -> Color(0xFF000000)
+        isDark -> Color(0xFF070B14)
+        else -> Color(0xFFFFFFFF)
+    }
     val badgeBorderColor = when (uiState.screenMode) {
         ToolScreenMode.FASTBOOT_ONECLICK -> Color(0xFF10B981)
         ToolScreenMode.FASTBOOT_FLASH -> Color(0xFFEF4444)
@@ -389,38 +416,40 @@ private fun ToolHeaderTopBar(
                         }
                     }
 
-                    Spacer(modifier = Modifier.width(2.dp))
+                    if (!isTerminal) {
+                        Spacer(modifier = Modifier.width(2.dp))
 
-                    IconButton(
-                        onClick = onOpenAbout,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("topbar_about_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Info,
-                            contentDescription = "About Commands",
-                            tint = Color(0xFF38BDF8),
-                            modifier = Modifier.size(17.dp)
-                        )
-                    }
+                        IconButton(
+                            onClick = onOpenAbout,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("topbar_about_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "About Commands",
+                                tint = Color(0xFF38BDF8),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
 
-                    IconButton(
-                        onClick = onToggleTheme,
-                        modifier = Modifier
-                            .size(32.dp)
-                            .testTag("topbar_theme_toggle")
-                    ) {
-                        Icon(
-                            imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "Toggle Light or Dark Theme",
-                            tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
-                            modifier = Modifier.size(17.dp)
-                        )
+                        IconButton(
+                            onClick = onToggleTheme,
+                            modifier = Modifier
+                                .size(32.dp)
+                                .testTag("topbar_theme_toggle")
+                        ) {
+                            Icon(
+                                imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Toggle Light or Dark Theme",
+                                tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
+                                modifier = Modifier.size(17.dp)
+                            )
+                        }
                     }
                 }
             }
-            HorizontalDivider(color = if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1))
+            HorizontalDivider(color = if (isTerminal) Color(0xFF1A1A1A) else if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1))
         }
     }
 }

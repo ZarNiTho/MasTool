@@ -68,4 +68,22 @@ class ExampleRobolectricTest {
         assertTrue(huaweiAdbActions.isNotEmpty())
         assertTrue(huaweiAdbActions.all { it.brand == ServiceBrand.HUAWEI && it.isAdb })
     }
+
+    @Test
+    fun `verify isolated cli terminal buffer starts empty without console logs`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = ServiceViewModel(app)
+
+        vm.navigateToMode(ToolScreenMode.CMD_TERMINAL)
+        // Terminal must start completely empty (no INIT / NAV / USB logs)
+        assertTrue(vm.uiState.value.terminalLines.isEmpty())
+        assertTrue(vm.uiState.value.consoleLogs.isNotEmpty())
+
+        vm.submitTerminalCommand("help")
+        assertTrue(vm.uiState.value.terminalLines.size >= 2)
+        assertEquals("~ $ help", vm.uiState.value.terminalLines.first().text)
+
+        vm.submitTerminalCommand("clear")
+        assertTrue(vm.uiState.value.terminalLines.isEmpty())
+    }
 }

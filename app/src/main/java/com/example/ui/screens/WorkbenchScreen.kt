@@ -25,9 +25,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Bolt
@@ -63,14 +60,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,12 +106,6 @@ fun WorkbenchScreen(
     val cardBorder = if (isDark) Color(0xFF1F2937) else Color(0xFFCBD5E1)
     val consoleBg = if (isDark) Color(0xFF090D16) else Color(0xFF0F172A)
 
-    if (uiState.showAboutDialog) {
-        AboutCommandReferenceDialog(
-            onDismiss = onDismissAbout
-        )
-    }
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -156,12 +144,7 @@ fun WorkbenchScreen(
                     onPickFile = onPickFile,
                     onStartPressed = onStartPressed
                 )
-                ToolScreenMode.CMD_TERMINAL -> TerminalDedicatedStartPanel(
-                    uiState = uiState,
-                    onRawCommandChange = onRawCommandChange,
-                    onScanPorts = onScanPorts,
-                    onStartPressed = onStartPressed
-                )
+                ToolScreenMode.CMD_TERMINAL -> Unit
             }
         }
 
@@ -618,179 +601,6 @@ private fun FlashDropdownStartPanel(
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-/**
- * Dedicated Command Terminal Tab Panel:
- * Strictly for custom command execution without ADB/Fastboot preset dropdowns.
- */
-@Composable
-private fun TerminalDedicatedStartPanel(
-    uiState: ServiceUiState,
-    onRawCommandChange: (String) -> Unit,
-    onScanPorts: () -> Unit,
-    onStartPressed: () -> Unit
-) {
-    val isDark = uiState.themeMode == ThemeMode.DARK
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Row 1: Dedicated Command Input Box
-        CompactCommandInputBox(
-            value = uiState.rawCommandInput,
-            onValueChange = onRawCommandChange,
-            placeholder = "Enter command...",
-            isDark = isDark,
-            onSubmit = onStartPressed,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("terminal_cmd_input")
-        )
-
-        // Row 2: Scan OTG + Single START Button
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = Color(0xFF162032),
-                border = BorderStroke(1.dp, Color(0xFF283548)),
-                modifier = Modifier
-                    .weight(0.85f)
-                    .height(38.dp)
-                    .clickable { onScanPorts() }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Scan USB",
-                        tint = Color(0xFF38BDF8),
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = "Scan OTG",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
-            }
-
-            Button(
-                onClick = onStartPressed,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF16A34A),
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                modifier = Modifier
-                    .weight(1.45f)
-                    .height(38.dp)
-                    .testTag("terminal_send_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Start",
-                    modifier = Modifier.size(17.dp)
-                )
-                Spacer(modifier = Modifier.width(5.dp))
-                Text(
-                    text = "START COMMAND",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.ExtraBold,
-                    maxLines = 1
-                )
-            }
-        }
-    }
-}
-
-/**
- * Vertically-centered single-line command input box (used only in the dedicated Terminal tab)
- */
-@Composable
-private fun CompactCommandInputBox(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    isDark: Boolean,
-    onSubmit: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val bgColor = if (isDark) Color(0xFF111827) else Color(0xFFF8FAFC)
-    val borderColor = if (isDark) Color(0xFF1E3A8A) else Color(0xFF94A3B8)
-    val textColor = if (isDark) Color.White else Color(0xFF0F172A)
-
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = bgColor,
-        border = BorderStroke(1.dp, borderColor),
-        modifier = modifier.heightIn(min = 40.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                if (value.isEmpty()) {
-                    Text(
-                        text = placeholder,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF64748B),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    singleLine = true,
-                    cursorBrush = SolidColor(Color(0xFF38BDF8)),
-                    textStyle = TextStyle(
-                        color = textColor,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium
-                    ),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { onSubmit() }),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            if (value.isNotEmpty()) {
-                Spacer(modifier = Modifier.width(6.dp))
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = "Clear Input",
-                    tint = Color(0xFF94A3B8),
-                    modifier = Modifier
-                        .size(16.dp)
-                        .clickable { onValueChange("") }
                 )
             }
         }
