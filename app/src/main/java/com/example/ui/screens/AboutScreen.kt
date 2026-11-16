@@ -123,7 +123,7 @@ fun AboutScreen(
                                     color = palette.textPrimary
                                 )
                                 Text(
-                                    text = "Android 10–16 Native USB OTG Engine",
+                                    text = "All Android (5–16) Native USB OTG Engine",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = palette.textSecondary
                                 )

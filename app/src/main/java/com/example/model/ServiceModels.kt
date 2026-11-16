@@ -63,7 +63,7 @@ enum class ToolScreenMode(
     ),
     FASTBOOT_FLASH(
         badgeTitle = "[FB] Flash",
-        headerTitle = "Fastboot Flash (.img / .bat / UPDATE.APP)"
+        headerTitle = "Fastboot Flash (Scatter / XML / .bat / APP)"
     ),
     FASTBOOT_INFO(
         badgeTitle = "[FB] Info",
@@ -101,7 +101,7 @@ enum class ToolScreenMode(
 }
 
 enum class ServiceBrand(val displayName: String, val shortTag: String) {
-    UNIVERSAL("Universal (Android 10–16)", "Universal"),
+    UNIVERSAL("Universal (All Android 5–16)", "Universal"),
     XIAOMI("Xiaomi / Redmi / Poco", "Xiaomi"),
     HUAWEI("Huawei / Honor (HiSilicon)", "Huawei"),
     VIVO("Vivo / iQOO (BBK)", "Vivo"),
@@ -151,11 +151,22 @@ data class UsbPortInfo(
 )
 
 enum class FlashFileType(val label: String) {
+    SCATTER("MTK SCATTER"),
+    RAWPROGRAM("QC FIREHOSE XML"),
     UPDATE_APP("UPDATE.APP"),
     SCRIPT("SCRIPT (.bat/.sh)"),
     IMAGE("IMAGE (.img/.bin)"),
     ARCHIVE("ZIP ARCHIVE"),
     RAW("RAW FILE")
+}
+
+enum class FlashStepStatus(val label: String) {
+    READY("READY"),
+    QUEUED("QUEUED"),
+    FLASHING("FLASHING"),
+    DONE("DONE"),
+    SKIPPED("SKIP"),
+    ERROR("ERROR")
 }
 
 data class ParsedFlashStep(
@@ -164,9 +175,28 @@ data class ParsedFlashStep(
     val command: String,
     val targetPartition: String,
     val sourceName: String,
-    val dataOffset: Long,
-    val dataSize: Long,
+    val sourceUriString: String? = null,
+    val dataOffset: Long = 0L,
+    val dataSize: Long = 0L,
+    val startAddressHex: String = "",
+    val isSparse: Boolean = false,
+    val isFlashable: Boolean = true,
+    val status: FlashStepStatus = FlashStepStatus.READY,
+    val progress: Float = 0f,
     val enabled: Boolean = true
+)
+
+data class FirmwareInfoSummary(
+    val formatLabel: String,
+    val chipsetOrPlatform: String = "Generic Android",
+    val projectOrBoard: String = "Unknown",
+    val storageType: String = "EMMC / UFS",
+    val sectorSizeBytes: Int = 4096,
+    val isFolderPackage: Boolean = false,
+    val resolvedImageCount: Int = 0,
+    val missingImageCount: Int = 0,
+    val largePartitionNames: List<String> = emptyList(),
+    val extraMetadataLines: List<String> = emptyList()
 )
 
 data class SelectedFlashFile(
@@ -178,7 +208,8 @@ data class SelectedFlashFile(
     val magicHeaderHex: String,
     val isSparseImage: Boolean,
     val sparseInfo: String,
-    val steps: List<ParsedFlashStep>
+    val steps: List<ParsedFlashStep>,
+    val firmwareInfo: FirmwareInfoSummary = FirmwareInfoSummary(formatLabel = fileType.label)
 )
 
 enum class LogLevel {

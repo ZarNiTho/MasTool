@@ -22,6 +22,8 @@ import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -34,10 +36,13 @@ import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -49,12 +54,12 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,15 +72,21 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.data.CommandRepository
+import com.example.data.FlashFileProcessor
+import com.example.data.SparseChunkPlanner
 import com.example.model.ConsoleLogEntry
+import com.example.model.FlashStepStatus
 import com.example.model.LogLevel
+import com.example.model.ParsedFlashStep
 import com.example.model.ServiceActionItem
 import com.example.model.ServiceBrand
 import com.example.model.ToolScreenMode
 import com.example.ui.ServiceUiState
 import com.example.ui.theme.LocalAppPalette
 import com.example.ui.theme.LocalFontConfig
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 @Composable
@@ -86,11 +97,14 @@ fun WorkbenchScreen(
     onSelectAction: (ServiceActionItem) -> Unit,
     onSelectPartition: (String) -> Unit,
     onToggleVerity: () -> Unit,
+    onToggleClearUserdata: () -> Unit,
     onToggleAutoReboot: () -> Unit,
     onToggleChecksum: () -> Unit,
     onToggleFastbootd: () -> Unit,
     onToggleStep: (String) -> Unit,
+    onToggleAllSteps: (Boolean) -> Unit,
     onPickFile: () -> Unit,
+    onPickFolder: () -> Unit,
     onScanPorts: () -> Unit,
     onStartPressed: () -> Unit,
     onClearLogs: () -> Unit,
@@ -98,13 +112,15 @@ fun WorkbenchScreen(
 ) {
     val palette = LocalAppPalette.current
     val fontConfig = LocalFontConfig.current
+    val scope = rememberCoroutineScope()
+    val flashPagerState = rememberPagerState(initialPage = 0, pageCount = { 2 })
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(palette.screenBg)
     ) {
-        // COMPACT TOP SELECTION & START DECK (Styled with active ThemeDesign accent & glow border)
+        // COMPACT TOP SELECTION & START DECK (Fixed Header — stays unchanged when sliding bottom pager)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -139,14 +155,16 @@ fun WorkbenchScreen(
                     )
                     ToolScreenMode.FASTBOOT_FLASH -> FlashDropdownStartPanel(
                         uiState = uiState,
-                        onSelectBrand = onSelectBrand,
                         onSelectPartition = onSelectPartition,
-                        onToggleVerity = onToggleVerity,
+                        onToggleClearUserdata = onToggleClearUserdata,
                         onToggleAutoReboot = onToggleAutoReboot,
-                        onToggleChecksum = onToggleChecksum,
+                        onToggleVerity = onToggleVerity,
                         onToggleFastbootd = onToggleFastbootd,
-                        onToggleStep = onToggleStep,
+                        onOpenPartitionTable = {
+                            scope.launch { flashPagerState.animateScrollToPage(1) }
+                        },
                         onPickFile = onPickFile,
+                        onPickFolder = onPickFolder,
                         onStartPressed = onStartPressed
                     )
                     ToolScreenMode.CMD_TERMINAL,
@@ -156,7 +174,7 @@ fun WorkbenchScreen(
             }
         }
 
-        // MIDDLE STATUS & PROGRESS STRIP
+        // MIDDLE STATUS & REAL-TIME PROGRESS STRIP
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = palette.statusStripBg
@@ -188,7 +206,16 @@ fun WorkbenchScreen(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                if (uiState.isBusy) {
+                if (uiState.isBusy && uiState.progressPercent > 0f) {
+                    LinearProgressIndicator(
+                        progress = { (uiState.progressPercent / 100f).coerceIn(0f, 1f) },
+                        color = palette.accentPrimary,
+                        trackColor = palette.cardBorder,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(3.dp)
+                    )
+                } else if (uiState.isBusy) {
                     LinearProgressIndicator(
                         color = palette.accentPrimary,
                         trackColor = palette.cardBorder,
@@ -202,15 +229,127 @@ fun WorkbenchScreen(
             }
         }
 
-        // EXPANDED BOTTOM LIVE LOG CONSOLE
-        LiveLogConsolePanel(
-            uiState = uiState,
-            consoleFontSp = fontConfig.consoleSp,
-            onClearLogs = onClearLogs,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        )
+        // BOTTOM AREA: Flash Tab ONLY supports horizontal swipe between Live Log Console & Partition Table
+        if (uiState.screenMode == ToolScreenMode.FASTBOOT_FLASH) {
+            val selectedFile = uiState.selectedFlashFile
+            val totalParts = selectedFile?.steps?.size ?: 0
+            val enabledParts = selectedFile?.steps?.count { it.enabled } ?: 0
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                // Compact Swipe/Tab Switcher Bar inside bottom container
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(palette.headerBg)
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        PagerModePill(
+                            icon = Icons.Default.Terminal,
+                            label = "LIVE LOG (${uiState.consoleLogs.size})",
+                            selected = flashPagerState.currentPage == 0,
+                            onClick = { scope.launch { flashPagerState.animateScrollToPage(0) } },
+                            modifier = Modifier.testTag("pager_tab_log")
+                        )
+                        PagerModePill(
+                            icon = Icons.Default.TableChart,
+                            label = "PARTITION TABLE ($enabledParts/$totalParts)",
+                            selected = flashPagerState.currentPage == 1,
+                            onClick = { scope.launch { flashPagerState.animateScrollToPage(1) } },
+                            modifier = Modifier.testTag("pager_tab_partition_table")
+                        )
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.SwapHoriz,
+                            contentDescription = "Swipe horizontally",
+                            tint = palette.textMuted,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+                HorizontalDivider(color = palette.divider)
+
+                HorizontalPager(
+                    state = flashPagerState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .testTag("flash_bottom_pager")
+                ) { page ->
+                    if (page == 0) {
+                        LiveLogConsolePanel(
+                            uiState = uiState,
+                            consoleFontSp = fontConfig.consoleSp,
+                            onClearLogs = onClearLogs,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        PartitionTablePanel(
+                            uiState = uiState,
+                            onToggleStep = onToggleStep,
+                            onToggleAllSteps = onToggleAllSteps,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+        } else {
+            LiveLogConsolePanel(
+                uiState = uiState,
+                consoleFontSp = fontConfig.consoleSp,
+                onClearLogs = onClearLogs,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun PagerModePill(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalAppPalette.current
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = if (selected) palette.accentPrimary.copy(alpha = 0.16f) else palette.cardAltBg,
+        border = BorderStroke(1.dp, if (selected) palette.accentPrimary else palette.cardBorder),
+        modifier = modifier
+            .height(28.dp)
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) palette.accentPrimary else palette.textSecondary,
+                modifier = Modifier.size(13.dp)
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) palette.accentPrimary else palette.textSecondary,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -374,75 +513,22 @@ private fun DropdownActionStartPanel(
 @Composable
 private fun FlashDropdownStartPanel(
     uiState: ServiceUiState,
-    onSelectBrand: (ServiceBrand) -> Unit,
     onSelectPartition: (String) -> Unit,
-    onToggleVerity: () -> Unit,
+    onToggleClearUserdata: () -> Unit,
     onToggleAutoReboot: () -> Unit,
-    onToggleChecksum: () -> Unit,
+    onToggleVerity: () -> Unit,
     onToggleFastbootd: () -> Unit,
-    onToggleStep: (String) -> Unit,
+    onOpenPartitionTable: () -> Unit,
     onPickFile: () -> Unit,
+    onPickFolder: () -> Unit,
     onStartPressed: () -> Unit
 ) {
     val palette = LocalAppPalette.current
-    var brandExpanded by remember { mutableStateOf(false) }
     var partitionExpanded by remember { mutableStateOf(false) }
-    var showPartsDialog by remember { mutableStateOf(false) }
 
     val selectedFile = uiState.selectedFlashFile
     val totalParts = selectedFile?.steps?.size ?: 0
     val enabledParts = selectedFile?.steps?.count { it.enabled } ?: 0
-
-    if (showPartsDialog && selectedFile != null) {
-        AlertDialog(
-            onDismissRequest = { showPartsDialog = false },
-            containerColor = palette.cardBg,
-            titleContentColor = palette.textPrimary,
-            textContentColor = palette.textSecondary,
-            title = {
-                Text(
-                    text = "${selectedFile.fileName} ($enabledParts/$totalParts Parts)",
-                    style = MaterialTheme.typography.titleMedium
-                )
-            },
-            text = {
-                LazyColumn(
-                    modifier = Modifier.heightIn(max = 260.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(selectedFile.steps, key = { it.id }) { step ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onToggleStep(step.id) }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (step.enabled) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                contentDescription = null,
-                                tint = palette.accentPrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = step.targetPartition,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = palette.textPrimary,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showPartsDialog = false }) {
-                    Text("Done", color = palette.accentPrimary)
-                }
-            }
-        )
-    }
 
     Column(
         modifier = Modifier
@@ -450,36 +536,94 @@ private fun FlashDropdownStartPanel(
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        // Row 1: Firmware File Picker + Firmware Folder Picker
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(modifier = Modifier.weight(1f)) {
-                SelectorDropdownBox(
-                    text = "Brand: ${uiState.selectedBrand.shortTag}",
-                    textColor = palette.textPrimary,
-                    onClick = { brandExpanded = true },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                DropdownMenu(
-                    expanded = brandExpanded,
-                    onDismissRequest = { brandExpanded = false }
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.cardBorder),
+                modifier = Modifier
+                    .weight(1.35f)
+                    .height(38.dp)
+                    .clickable(enabled = !uiState.isBusy) { onPickFile() }
+                    .testTag("pick_flash_file_button")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ServiceBrand.entries.forEach { brand ->
-                        DropdownMenuItem(
-                            text = { Text(brand.displayName, fontWeight = FontWeight.SemiBold) },
-                            onClick = {
-                                onSelectBrand(brand)
-                                brandExpanded = false
-                            }
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = "Load Firmware File",
+                        tint = palette.accentPrimary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = selectedFile?.fileName ?: "Scatter / XML / .bat / .app / .img",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
 
-            Box(modifier = Modifier.weight(1f)) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.accentSecondary.copy(alpha = 0.65f)),
+                modifier = Modifier
+                    .weight(0.75f)
+                    .height(38.dp)
+                    .clickable(enabled = !uiState.isBusy) { onPickFolder() }
+                    .testTag("pick_flash_folder_button")
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FolderOpen,
+                        contentDescription = "Load Firmware Folder",
+                        tint = palette.accentSecondary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Folder",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.accentSecondary,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        // Row 2: Single-Img Target Partition Dropdown + Partitions Jump Button
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1.35f)) {
                 SelectorDropdownBox(
-                    text = uiState.selectedPartition,
+                    text = if (selectedFile != null && selectedFile.steps.size > 1) {
+                        "Format: ${selectedFile.firmwareInfo.formatLabel}"
+                    } else {
+                        "Target: ${uiState.selectedPartition}"
+                    },
                     textColor = palette.accentPrimary,
                     onClick = { partitionExpanded = true },
                     modifier = Modifier.fillMaxWidth()
@@ -500,46 +644,6 @@ private fun FlashDropdownStartPanel(
                     }
                 }
             }
-        }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = palette.cardAltBg,
-                border = BorderStroke(1.dp, palette.cardBorder),
-                modifier = Modifier
-                    .weight(1.4f)
-                    .height(38.dp)
-                    .clickable { onPickFile() }
-                    .testTag("pick_flash_file_button")
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Description,
-                        contentDescription = null,
-                        tint = palette.accentPrimary,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = selectedFile?.fileName ?: "Load .img / .bat / UPDATE.APP",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = palette.textPrimary,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
 
             Surface(
                 shape = RoundedCornerShape(8.dp),
@@ -548,7 +652,7 @@ private fun FlashDropdownStartPanel(
                 modifier = Modifier
                     .weight(0.75f)
                     .height(38.dp)
-                    .clickable(enabled = totalParts > 0) { showPartsDialog = true }
+                    .clickable { onOpenPartitionTable() }
                     .testTag("parts_count_button")
             ) {
                 Box(
@@ -566,6 +670,7 @@ private fun FlashDropdownStartPanel(
             }
         }
 
+        // Row 3: Select Options in Top Header (Clear Userdata, Auto Reboot, Verity, Fastbootd) + START FLASH
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -573,14 +678,32 @@ private fun FlashDropdownStartPanel(
         ) {
             Row(
                 modifier = Modifier
-                    .weight(1.15f)
+                    .weight(1.22f)
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                OptionTogglePill("Verity", uiState.disableVerity, onToggleVerity)
-                OptionTogglePill("Reboot", uiState.autoReboot, onToggleAutoReboot)
-                OptionTogglePill("Fastbootd", uiState.useFastbootd, onToggleFastbootd)
-                OptionTogglePill("CRC", uiState.checksumVerify, onToggleChecksum)
+                OptionTogglePill(
+                    label = "Clear Userdata",
+                    checked = uiState.clearUserdata,
+                    onClick = onToggleClearUserdata,
+                    modifier = Modifier.testTag("toggle_clear_userdata")
+                )
+                OptionTogglePill(
+                    label = "Auto Reboot",
+                    checked = uiState.autoReboot,
+                    onClick = onToggleAutoReboot,
+                    modifier = Modifier.testTag("toggle_auto_reboot")
+                )
+                OptionTogglePill(
+                    label = "Verity",
+                    checked = uiState.disableVerity,
+                    onClick = onToggleVerity
+                )
+                OptionTogglePill(
+                    label = "Fastbootd",
+                    checked = uiState.useFastbootd,
+                    onClick = onToggleFastbootd
+                )
             }
 
             Button(
@@ -592,7 +715,7 @@ private fun FlashDropdownStartPanel(
                 shape = RoundedCornerShape(8.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier
-                    .weight(0.95f)
+                    .weight(0.82f)
                     .height(38.dp)
                     .testTag("execute_flash_button")
             ) {
@@ -603,7 +726,7 @@ private fun FlashDropdownStartPanel(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = if (uiState.isBusy) "STOP" else "START FLASH",
+                    text = if (uiState.isBusy) "STOP" else "FLASH",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
@@ -611,6 +734,353 @@ private fun FlashDropdownStartPanel(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun PartitionTablePanel(
+    uiState: ServiceUiState,
+    onToggleStep: (String) -> Unit,
+    onToggleAllSteps: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val palette = LocalAppPalette.current
+    val selectedFile = uiState.selectedFlashFile
+
+    Surface(
+        modifier = modifier.testTag("partition_table_panel"),
+        color = palette.consoleBg
+    ) {
+        if (selectedFile == null || selectedFile.steps.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.TableChart,
+                        contentDescription = null,
+                        tint = palette.accentPrimary,
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Text(
+                        text = "Partition Table Ready",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textPrimary
+                    )
+                    Text(
+                        text = "Load Scatter.txt, Rawprogram0.xml, Flash .bat, UPDATE.APP, or Firmware Folder above to inspect & select partitions.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.textSecondary
+                    )
+                }
+            }
+            return@Surface
+        }
+
+        val steps = selectedFile.steps
+        val selectableSteps = steps.filter { it.isFlashable }.ifEmpty { steps }
+        val allSelected = selectableSteps.isNotEmpty() && selectableSteps.all { it.enabled }
+        val enabledSteps = steps.filter { it.enabled }
+        val selectedTotalBytes = enabledSteps.sumOf { it.dataSize }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Toolbar: Select All / Deselect All + Selected Size + Format Badge
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(palette.cardBg)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable(enabled = !uiState.isBusy) {
+                            onToggleAllSteps(!allSelected)
+                        }
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .testTag("select_all_partitions_checkbox")
+                ) {
+                    Icon(
+                        imageVector = if (allSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                        contentDescription = "Select All Partitions",
+                        tint = palette.accentPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "All (${enabledSteps.size}/${steps.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textPrimary
+                    )
+                }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = FlashFileProcessor.formatSize(selectedTotalBytes),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.accentSecondary
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = palette.accentPrimary.copy(alpha = 0.14f),
+                        border = BorderStroke(1.dp, palette.accentPrimary.copy(alpha = 0.45f))
+                    ) {
+                        Text(
+                            text = selectedFile.fileType.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = palette.accentPrimary,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+            HorizontalDivider(color = palette.divider)
+
+            // Table Header Row
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(palette.statusStripBg)
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Spacer(modifier = Modifier.width(26.dp))
+                Text(
+                    text = "PARTITION",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textMuted,
+                    modifier = Modifier.weight(1.1f)
+                )
+                Text(
+                    text = "SIZE",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textMuted,
+                    modifier = Modifier.weight(0.65f)
+                )
+                Text(
+                    text = "SOURCE / ADDR",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textMuted,
+                    modifier = Modifier.weight(1.15f)
+                )
+                Text(
+                    text = "STATUS",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = palette.textMuted,
+                    modifier = Modifier.width(56.dp)
+                )
+            }
+            HorizontalDivider(color = palette.divider)
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .testTag("partition_table_list"),
+                contentPadding = PaddingValues(vertical = 4.dp)
+            ) {
+                items(steps, key = { it.id }) { step ->
+                    PartitionTableRow(
+                        step = step,
+                        isBusy = uiState.isBusy,
+                        onToggle = { onToggleStep(step.id) }
+                    )
+                    HorizontalDivider(color = palette.divider.copy(alpha = 0.45f))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PartitionTableRow(
+    step: ParsedFlashStep,
+    isBusy: Boolean,
+    onToggle: () -> Unit
+) {
+    val palette = LocalAppPalette.current
+    val isLarge = step.dataSize > SparseChunkPlanner.DEFAULT_SAFE_CHUNK_BYTES
+
+    val statusColor = when (step.status) {
+        FlashStepStatus.READY -> palette.accentPrimary
+        FlashStepStatus.QUEUED -> palette.textSecondary
+        FlashStepStatus.FLASHING -> Color(0xFFF59E0B)
+        FlashStepStatus.DONE -> Color(0xFF10B981)
+        FlashStepStatus.SKIPPED -> palette.textMuted
+        FlashStepStatus.ERROR -> Color(0xFFEF4444)
+    }
+
+    val statusText = when (step.status) {
+        FlashStepStatus.FLASHING -> "${(step.progress * 100).toInt()}%"
+        else -> step.status.label
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                if (step.status == FlashStepStatus.FLASHING) {
+                    palette.accentPrimary.copy(alpha = 0.08f)
+                } else {
+                    Color.Transparent
+                }
+            )
+            .clickable(enabled = !isBusy) { onToggle() }
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (step.enabled) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                contentDescription = "Toggle ${step.targetPartition}",
+                tint = if (step.enabled) palette.accentPrimary else palette.textMuted,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Partition Name + Tags
+            Column(modifier = Modifier.weight(1.1f)) {
+                Text(
+                    text = step.targetPartition,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = if (step.enabled) palette.textPrimary else palette.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    if (step.isSparse) {
+                        MiniBadge("SPARSE", palette.accentSecondary)
+                    }
+                    if (isLarge) {
+                        MiniBadge("SPLIT", Color(0xFFF59E0B))
+                    }
+                }
+            }
+
+            // Size
+            Text(
+                text = if (step.dataSize > 0L) FlashFileProcessor.formatSize(step.dataSize) else "CMD",
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = palette.textSecondary,
+                maxLines = 1,
+                modifier = Modifier.weight(0.65f)
+            )
+
+            // Source File + Offset/Sector
+            Column(modifier = Modifier.weight(1.15f)) {
+                Text(
+                    text = step.sourceName,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    color = if (step.sourceUriString == null && step.isFlashable && step.command.startsWith("fastboot flash")) {
+                        Color(0xFFF59E0B)
+                    } else {
+                        palette.textSecondary
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (step.startAddressHex.isNotEmpty()) {
+                    Text(
+                        text = step.startAddressHex,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = palette.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // Status Badge
+            Surface(
+                shape = RoundedCornerShape(4.dp),
+                color = statusColor.copy(alpha = 0.14f),
+                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.45f)),
+                modifier = Modifier.width(56.dp)
+            ) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                ) {
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = statusColor,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        if (step.status == FlashStepStatus.FLASHING) {
+            Spacer(modifier = Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { step.progress.coerceIn(0f, 1f) },
+                color = palette.accentPrimary,
+                trackColor = palette.cardBorder,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MiniBadge(text: String, color: Color) {
+    Surface(
+        shape = RoundedCornerShape(3.dp),
+        color = color.copy(alpha = 0.14f)
+    ) {
+        Text(
+            text = text,
+            fontSize = 8.sp,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+        )
     }
 }
 
@@ -662,7 +1132,8 @@ private fun SelectorDropdownBox(
 private fun OptionTogglePill(
     label: String,
     checked: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val palette = LocalAppPalette.current
 
@@ -673,7 +1144,7 @@ private fun OptionTogglePill(
             1.dp,
             if (checked) palette.accentPrimary else palette.cardBorder
         ),
-        modifier = Modifier
+        modifier = modifier
             .height(34.dp)
             .clickable { onClick() }
     ) {

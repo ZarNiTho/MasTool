@@ -12,7 +12,10 @@ import com.example.data.UsbPortController
 import com.example.model.ActionGroup
 import com.example.model.AppFontSize
 import com.example.model.ConsoleLogEntry
+import com.example.model.FirmwareInfoSummary
+import com.example.model.FlashStepStatus
 import com.example.model.LogLevel
+import com.example.model.ParsedFlashStep
 import com.example.model.SelectedFlashFile
 import com.example.model.ServiceActionItem
 import com.example.model.ServiceBrand
@@ -25,6 +28,7 @@ import com.example.model.UsbProtocolType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -50,6 +54,7 @@ data class ServiceUiState(
     },
     val selectedPartition: String = CommandRepository.supportedPartitions.first(),
     val disableVerity: Boolean = true,
+    val clearUserdata: Boolean = false,
     val autoReboot: Boolean = true,
     val checksumVerify: Boolean = true,
     val useFastbootd: Boolean = false,
@@ -57,6 +62,8 @@ data class ServiceUiState(
     val isBusy: Boolean = false,
     val statusBarText: String = "USB OTG Ready",
     val progressPercent: Float = 0f,
+    val currentFlashingPartition: String = "",
+    val currentChunkLabel: String = "",
     val consoleLogs: List<ConsoleLogEntry> = emptyList(),
     val terminalInput: String = "",
     val terminalLines: List<TerminalLine> = emptyList(),
@@ -229,6 +236,10 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { it.copy(disableVerity = !it.disableVerity) }
     }
 
+    fun toggleClearUserdata() {
+        _uiState.update { it.copy(clearUserdata = !it.clearUserdata) }
+    }
+
     fun toggleAutoReboot() {
         _uiState.update { it.copy(autoReboot = !it.autoReboot) }
     }
@@ -245,7 +256,36 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         _uiState.update { state ->
             val file = state.selectedFlashFile ?: return@update state
             val updated = file.steps.map { s ->
-                if (s.id == stepId) s.copy(enabled = !s.enabled) else s
+                if (s.id == stepId) {
+                    val nextEnabled = !s.enabled
+                    s.copy(
+                        enabled = nextEnabled,
+                        status = if (nextEnabled) FlashStepStatus.READY else FlashStepStatus.SKIPPED,
+                        progress = 0f
+                    )
+                } else {
+                    s
+                }
+            }
+            state.copy(selectedFlashFile = file.copy(steps = updated))
+        }
+    }
+
+    fun toggleAllFlashSteps(selectAll: Boolean) {
+        _uiState.update { state ->
+            val file = state.selectedFlashFile ?: return@update state
+            val hasExplicitFlashable = file.steps.any { it.isFlashable }
+            val updated = file.steps.map { s ->
+                val enableTarget = if (selectAll) {
+                    if (hasExplicitFlashable) s.isFlashable else true
+                } else {
+                    false
+                }
+                s.copy(
+                    enabled = enableTarget,
+                    status = if (enableTarget) FlashStepStatus.READY else FlashStepStatus.SKIPPED,
+                    progress = 0f
+                )
             }
             state.copy(selectedFlashFile = file.copy(steps = updated))
         }
@@ -328,7 +368,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
             _uiState.update {
                 it.copy(
                     isBusy = true,
-                    statusBarText = "Loading firmware..."
+                    statusBarText = "Parsing firmware..."
                 )
             }
             val context = getApplication<Application>().applicationContext
@@ -338,18 +378,88 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
             val parsed = withContext(Dispatchers.IO) {
                 FlashFileProcessor.inspectAndParseUri(context, uri, fallbackPart)
             }
+            applyParsedFirmware(parsed)
+        }
+    }
+
+    fun onFolderPicked(treeUri: Uri) {
+        viewModelScope.launch {
             _uiState.update {
                 it.copy(
-                    selectedFlashFile = parsed,
-                    isBusy = false,
-                    statusBarText = "Loaded: ${parsed.fileName} (${parsed.formattedSize})",
-                    screenMode = ToolScreenMode.FASTBOOT_FLASH
+                    isBusy = true,
+                    statusBarText = "Scanning firmware folder..."
                 )
             }
+            val context = getApplication<Application>().applicationContext
+            val rawPart = _uiState.value.selectedPartition.substringBefore(" ").lowercase(Locale.US)
+            val fallbackPart = if (rawPart == "auto") "boot" else rawPart
+
+            val parsed = withContext(Dispatchers.IO) {
+                FlashFileProcessor.inspectAndParseFolderTree(context, treeUri, fallbackPart)
+            }
+            if (parsed != null) {
+                applyParsedFirmware(parsed)
+            } else {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        statusBarText = "No firmware files found in folder"
+                    )
+                }
+                appendLog(
+                    tag = "FW",
+                    message = "No scatter.txt, rawprogram*.xml, flash.bat, UPDATE.APP, or .img found in folder.",
+                    level = LogLevel.WARN
+                )
+            }
+        }
+    }
+
+    fun applyParsedFirmware(parsed: SelectedFlashFile) {
+        val enabledCount = parsed.steps.count { it.enabled }
+        _uiState.update {
+            it.copy(
+                selectedFlashFile = parsed,
+                isBusy = false,
+                progressPercent = 0f,
+                currentFlashingPartition = "",
+                currentChunkLabel = "",
+                statusBarText = "${parsed.firmwareInfo.formatLabel}: ${parsed.fileName} ($enabledCount/${parsed.steps.size})",
+                screenMode = ToolScreenMode.FASTBOOT_FLASH
+            )
+        }
+
+        val info = parsed.firmwareInfo
+        appendLog(
+            tag = "FW",
+            message = "FW Format: ${info.formatLabel} | Package: ${parsed.fileName}",
+            level = LogLevel.OKAY
+        )
+        appendLog(
+            tag = "FW",
+            message = "Platform: ${info.chipsetOrPlatform} | Target: ${info.projectOrBoard} | Storage: ${info.storageType}",
+            level = LogLevel.INFO
+        )
+        appendLog(
+            tag = "FW",
+            message = "Partitions: $enabledCount/${parsed.steps.size} selected | Total Size: ${parsed.formattedSize} | Sector: ${info.sectorSizeBytes}B",
+            level = LogLevel.INFO
+        )
+        info.extraMetadataLines.forEach { extra ->
+            appendLog(tag = "FW", message = extra, level = LogLevel.INFO)
+        }
+        if (info.largePartitionNames.isNotEmpty()) {
             appendLog(
-                tag = "FILE",
-                message = "Loaded: ${parsed.fileName} (${parsed.formattedSize}, ${parsed.steps.size} part)",
-                level = LogLevel.OKAY
+                tag = "SPLIT",
+                message = "Large Partitions (${info.largePartitionNames.joinToString(", ")}) -> Auto Sparse/Chunk Split Ready (128MB/chunk).",
+                level = LogLevel.USB
+            )
+        }
+        if (info.missingImageCount > 0 && !info.isFolderPackage) {
+            appendLog(
+                tag = "FW",
+                message = "Manifest parsed (${info.missingImageCount} image payloads external). Load Firmware Folder to attach .img files.",
+                level = LogLevel.WARN
             )
         }
     }
@@ -578,17 +688,26 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         if (_uiState.value.isBusy) return
         val state = _uiState.value
         val file = state.selectedFlashFile ?: run {
-            appendLog("FLASH", "Load a firmware file first.", LogLevel.WARN)
+            appendLog("FLASH", "Load a firmware file or folder first.", LogLevel.WARN)
             return
         }
         val enabledSteps = file.steps.filter { it.enabled }
         if (enabledSteps.isEmpty()) {
-            appendLog("FLASH", "No partitions selected.", LogLevel.WARN)
+            appendLog("FLASH", "No partitions selected in Partition Table.", LogLevel.WARN)
             return
         }
         val portName = state.selectedPortName ?: run {
             appendLog("FLASH", "No USB OTG device connected.", LogLevel.FAIL)
             return
+        }
+
+        // Reset step states cleanly before starting
+        updateFlashSteps { step ->
+            if (step.enabled) {
+                step.copy(status = FlashStepStatus.QUEUED, progress = 0f)
+            } else {
+                step.copy(status = FlashStepStatus.SKIPPED, progress = 0f)
+            }
         }
 
         soundManager.playActionStart()
@@ -599,19 +718,25 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                     it.copy(
                         isBusy = true,
                         progressPercent = 0f,
-                        statusBarText = "Flashing ${file.fileName}..."
+                        currentFlashingPartition = "",
+                        currentChunkLabel = "",
+                        statusBarText = "Starting Flash (${enabledSteps.size} partitions)..."
                     )
                 }
                 appendLog(
                     tag = "FLASH",
-                    message = "Start Flash: ${file.fileName} (${enabledSteps.size} partition)",
+                    message = "Flash Start: ${file.fileName} | Selected: ${enabledSteps.size} | ClearUserdata: ${if (state.clearUserdata) "ON" else "OFF"} | AutoReboot: ${if (state.autoReboot) "ON" else "OFF"}",
                     level = LogLevel.CMD
                 )
-                val uri = Uri.parse(file.uriString)
+
+                val totalWeightBytes = enabledSteps.sumOf { it.dataSize.coerceAtLeast(1024L * 1024L) }
+                    .coerceAtLeast(1L)
+                var finishedWeightBytes = 0L
+                var allSucceeded = true
 
                 withContext(Dispatchers.IO) {
                     if (state.useFastbootd) {
-                        appendLog("FLASH", "Entering Fastbootd...", LogLevel.USB)
+                        appendLog("FLASH", "Switching to Fastbootd...", LogLevel.USB)
                         usbController.executeFastbootWireCommands(
                             deviceName = portName,
                             wireCommands = listOf("reboot-fastboot"),
@@ -621,45 +746,133 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                         }
                     }
 
-                    enabledSteps.forEachIndexed { idx, step ->
+                    for (idx in enabledSteps.indices) {
+                        coroutineContext.ensureActive()
+                        val step = enabledSteps[idx]
+                        val stepWeight = step.dataSize.coerceAtLeast(1024L * 1024L)
+                        var currentChunkSuffix = ""
+                        var lastLoggedPctMilestone = 0
+
+                        updateSingleFlashStep(step.id, FlashStepStatus.FLASHING, 0f)
+                        _uiState.update {
+                            it.copy(
+                                currentFlashingPartition = step.targetPartition,
+                                currentChunkLabel = "",
+                                statusBarText = "[${idx + 1}/${enabledSteps.size}] Flashing ${step.targetPartition} (0%)..."
+                            )
+                        }
                         appendLog(
                             tag = "FLASH",
-                            message = "[${idx + 1}/${enabledSteps.size}] ${step.targetPartition}",
+                            message = "[${idx + 1}/${enabledSteps.size}] Writing ${step.targetPartition} (${FlashFileProcessor.formatSize(step.dataSize)}) — 0%",
                             level = LogLevel.CMD
                         )
-                        if (step.dataSize > 0L) {
-                            usbController.flashBinaryStreamOverUsb(
-                                deviceName = portName,
-                                uri = uri,
-                                partition = step.targetPartition,
-                                dataOffset = step.dataOffset,
-                                dataSize = step.dataSize,
-                                disableVerity = state.disableVerity,
-                                verboseWireLogs = false,
-                                onProgress = { ratio ->
-                                    val totalPct = ((idx + ratio) / enabledSteps.size.toFloat()) * 100f
-                                    _uiState.update {
-                                        it.copy(
-                                            progressPercent = totalPct.coerceIn(0f, 100f),
-                                            statusBarText = "Flashing ${step.targetPartition}..."
-                                        )
-                                    }
-                                },
-                                onLog = { msg, lvl -> appendLog("USB", msg, lvl) }
+
+                        val resolvedUriStr = step.sourceUriString
+                            ?: file.uriString.takeIf {
+                                file.fileType == com.example.model.FlashFileType.UPDATE_APP ||
+                                    file.fileType == com.example.model.FlashFileType.IMAGE ||
+                                    file.fileType == com.example.model.FlashFileType.RAW
+                            }
+
+                        val stepOk: Boolean = when {
+                            resolvedUriStr != null && step.dataSize > 0L -> {
+                                val stepUri = Uri.parse(resolvedUriStr)
+                                usbController.flashBinaryStreamOverUsb(
+                                    deviceName = portName,
+                                    uri = stepUri,
+                                    partition = step.targetPartition,
+                                    dataOffset = step.dataOffset,
+                                    dataSize = step.dataSize,
+                                    disableVerity = state.disableVerity,
+                                    verboseWireLogs = false,
+                                    isCancelled = { activeOperationJob?.isActive != true },
+                                    onChunkInfo = { cIdx, cTotal, _ ->
+                                        currentChunkSuffix = if (cTotal > 1) "Chunk $cIdx/$cTotal" else ""
+                                        _uiState.update { it.copy(currentChunkLabel = currentChunkSuffix) }
+                                    },
+                                    onProgress = { ratio ->
+                                        val clamped = ratio.coerceIn(0f, 1f)
+                                        val partPct = (clamped * 100f).toInt()
+                                        val globalPct = ((finishedWeightBytes + stepWeight * clamped) / totalWeightBytes.toFloat()) * 100f
+
+                                        updateSingleFlashStep(step.id, FlashStepStatus.FLASHING, clamped)
+                                        _uiState.update {
+                                            it.copy(
+                                                progressPercent = globalPct.coerceIn(0f, 100f),
+                                                statusBarText = "[${idx + 1}/${enabledSteps.size}] ${step.targetPartition}: $partPct% ${if (currentChunkSuffix.isNotEmpty()) "• $currentChunkSuffix" else ""}".trim()
+                                            )
+                                        }
+
+                                        val milestone = (partPct / 25) * 25
+                                        if (milestone in listOf(25, 50, 75) && milestone > lastLoggedPctMilestone) {
+                                            lastLoggedPctMilestone = milestone
+                                            appendLog(
+                                                tag = "PROG",
+                                                message = "  ↳ ${step.targetPartition}: $milestone% ${if (currentChunkSuffix.isNotEmpty()) "($currentChunkSuffix)" else ""}".trim(),
+                                                level = LogLevel.USB
+                                            )
+                                        }
+                                    },
+                                    onLog = { msg, lvl -> appendLog("USB", msg, lvl) }
+                                )
+                            }
+
+                            step.command.startsWith("fastboot flash", ignoreCase = true) -> {
+                                appendLog(
+                                    tag = "SKIP",
+                                    message = "  ↳ Payload missing for ${step.targetPartition} (${step.sourceName}). Load Firmware Folder.",
+                                    level = LogLevel.WARN
+                                )
+                                false
+                            }
+
+                            else -> {
+                                val wireCmds = toFastbootWireProtocolList(step.command)
+                                usbController.executeFastbootWireCommands(
+                                    deviceName = portName,
+                                    wireCommands = wireCmds,
+                                    verboseWireLogs = false,
+                                    onLog = { msg, lvl -> appendLog("USB", msg, lvl) }
+                                )
+                            }
+                        }
+
+                        finishedWeightBytes += stepWeight
+                        if (stepOk) {
+                            updateSingleFlashStep(step.id, FlashStepStatus.DONE, 1f)
+                            appendLog(
+                                tag = "OKAY",
+                                message = "[${idx + 1}/${enabledSteps.size}] ${step.targetPartition} — 100% DONE",
+                                level = LogLevel.OKAY
                             )
                         } else {
-                            val wireCmds = toFastbootWireProtocolList(step.command)
-                            usbController.executeFastbootWireCommands(
-                                deviceName = portName,
-                                wireCommands = wireCmds,
-                                verboseWireLogs = false,
-                                onLog = { msg, lvl -> appendLog("USB", msg, lvl) }
+                            allSucceeded = false
+                            updateSingleFlashStep(step.id, FlashStepStatus.ERROR, 0f)
+                            appendLog(
+                                tag = "FAIL",
+                                message = "[${idx + 1}/${enabledSteps.size}] ${step.targetPartition} — FAILED",
+                                level = LogLevel.FAIL
                             )
                         }
                     }
 
+                    if (state.clearUserdata) {
+                        coroutineContext.ensureActive()
+                        _uiState.update { it.copy(statusBarText = "Wiping userdata & metadata...") }
+                        appendLog("WIPE", "Clearing userdata & metadata...", LogLevel.CMD)
+                        usbController.executeFastbootWireCommands(
+                            deviceName = portName,
+                            wireCommands = listOf("erase:userdata", "erase:metadata"),
+                            verboseWireLogs = false
+                        ) { msg, lvl ->
+                            appendLog("WIPE", msg, lvl)
+                        }
+                    }
+
                     if (state.autoReboot) {
-                        appendLog("FLASH", "Rebooting device...", LogLevel.INFO)
+                        coroutineContext.ensureActive()
+                        _uiState.update { it.copy(statusBarText = "Rebooting device...") }
+                        appendLog("FLASH", "Auto Rebooting device...", LogLevel.INFO)
                         usbController.executeFastbootWireCommands(
                             deviceName = portName,
                             wireCommands = listOf("reboot"),
@@ -667,10 +880,16 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                         ) { msg, lvl ->
                             appendLog("USB", msg, lvl)
                         }
+                    } else {
+                        appendLog("FLASH", "Auto Reboot OFF — staying in Fastboot mode.", LogLevel.INFO)
                     }
                 }
-                completedNormally = true
-                appendLog("DONE", "Flash finished.", LogLevel.OKAY)
+                completedNormally = allSucceeded
+                appendLog(
+                    tag = "DONE",
+                    message = if (allSucceeded) "All selected partitions flashed (100%)." else "Flash finished with errors.",
+                    level = if (allSucceeded) LogLevel.OKAY else LogLevel.WARN
+                )
             } catch (c: CancellationException) {
                 throw c
             } finally {
@@ -680,11 +899,30 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                 _uiState.update {
                     it.copy(
                         isBusy = false,
-                        progressPercent = if (completedNormally) 100f else 0f,
-                        statusBarText = "USB OTG Ready"
+                        progressPercent = if (completedNormally) 100f else it.progressPercent,
+                        currentFlashingPartition = "",
+                        currentChunkLabel = "",
+                        statusBarText = if (completedNormally) "Flash Completed (100%)" else "USB OTG Ready"
                     )
                 }
             }
+        }
+    }
+
+    private fun updateFlashSteps(transform: (ParsedFlashStep) -> ParsedFlashStep) {
+        _uiState.update { state ->
+            val file = state.selectedFlashFile ?: return@update state
+            state.copy(
+                selectedFlashFile = file.copy(
+                    steps = file.steps.map(transform)
+                )
+            )
+        }
+    }
+
+    private fun updateSingleFlashStep(stepId: String, status: FlashStepStatus, progress: Float) {
+        updateFlashSteps { step ->
+            if (step.id == stepId) step.copy(status = status, progress = progress) else step
         }
     }
 

@@ -171,6 +171,20 @@ fun FastDeckRootApp(
         }
     }
 
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri ->
+        if (treeUri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            viewModel.onFolderPicked(treeUri)
+        }
+    }
+
     DisposableEffect(context) {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -296,11 +310,14 @@ fun FastDeckRootApp(
                     onSelectAction = { viewModel.setSelectedAction(it) },
                     onSelectPartition = { viewModel.setPartition(it) },
                     onToggleVerity = { viewModel.toggleDisableVerity() },
+                    onToggleClearUserdata = { viewModel.toggleClearUserdata() },
                     onToggleAutoReboot = { viewModel.toggleAutoReboot() },
                     onToggleChecksum = { viewModel.toggleChecksum() },
                     onToggleFastbootd = { viewModel.toggleUseFastbootd() },
                     onToggleStep = { viewModel.toggleFlashStep(it) },
+                    onToggleAllSteps = { viewModel.toggleAllFlashSteps(it) },
                     onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
+                    onPickFolder = { folderPickerLauncher.launch(null) },
                     onScanPorts = { viewModel.scanUsbPorts(userInitiated = true) },
                     onStartPressed = { viewModel.onStartPressed() },
                     onClearLogs = { viewModel.clearLogs() },
@@ -522,7 +539,7 @@ private fun FastDeckDrawerContent(
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Android 10–16 Service Suite",
+                        text = "All-Android (5–16) Service Suite",
                         style = MaterialTheme.typography.labelSmall,
                         color = palette.textSecondary,
                         maxLines = 1,

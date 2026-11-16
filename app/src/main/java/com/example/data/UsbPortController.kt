@@ -161,35 +161,36 @@ class UsbPortController(private val context: Context) {
         wireCommands: List<String>,
         verboseWireLogs: Boolean = false,
         onLog: (String, LogLevel) -> Unit
-    ) {
+    ): Boolean {
         val manager = usbManager ?: run {
             onLog("USB Host unavailable.", LogLevel.FAIL)
-            return
+            return false
         }
         val device = manager.deviceList[deviceName] ?: run {
             onLog("Device not attached.", LogLevel.FAIL)
-            return
+            return false
         }
         if (!manager.hasPermission(device)) {
             onLog("USB permission required. Please allow access.", LogLevel.WARN)
             requestPermission(deviceName)
-            return
+            return false
         }
 
         val triple = findBulkEndpoints(device, preferProtocol = 0x03) ?: run {
             onLog("No USB Bulk endpoints found.", LogLevel.FAIL)
-            return
+            return false
         }
         val (iface, epIn, epOut) = triple
         val connection = manager.openDevice(device) ?: run {
             onLog("Failed to open USB connection.", LogLevel.FAIL)
-            return
+            return false
         }
 
+        var allOk = true
         try {
             if (!connection.claimInterface(iface, true)) {
                 onLog("Failed to claim Fastboot interface.", LogLevel.FAIL)
-                return
+                return false
             }
 
             for (wireCommand in wireCommands) {
@@ -197,22 +198,26 @@ class UsbPortController(private val context: Context) {
                 val tx = connection.bulkTransfer(epOut, payload, payload.size, 4000)
                 if (tx < 0) {
                     onLog("USB transfer failed ($tx).", LogLevel.FAIL)
-                    return
+                    return false
                 }
                 if (verboseWireLogs) {
                     onLog("TX ($tx B) -> $wireCommand", LogLevel.USB)
                 }
 
                 val timeoutMs = if (wireCommand.startsWith("erase:") || wireCommand.startsWith("flash:")) {
-                    15000
+                    20000
                 } else {
                     4000
                 }
                 val ok = readFastbootResponses(connection, epIn, timeoutMs, verboseWireLogs, onLog)
-                if (!ok) break
+                if (!ok) {
+                    allOk = false
+                    break
+                }
             }
         } catch (e: Exception) {
             onLog("USB Fastboot exception: ${e.message}", LogLevel.FAIL)
+            allOk = false
         } finally {
             try {
                 connection.releaseInterface(iface)
@@ -220,11 +225,14 @@ class UsbPortController(private val context: Context) {
             } catch (_: Exception) {
             }
         }
+        return allOk
     }
 
     /**
-     * Streams binary image data from a Uri (or UPDATE.APP byte offset) using ParcelFileDescriptor / InputStream
+     * Streams binary image data from a Uri (or UPDATE.APP byte offset) using ParcelFileDescriptor / FileChannel
      * over USB Bulk endpoints using Fastboot download + flash protocol.
+     * Automatically splits multi-GB partitions (super, system, vendor) along Sparse chunk boundaries
+     * using only a 16 KB reusable streaming buffer to prevent OutOfMemoryError and bootloader crashes.
      */
     fun flashBinaryStreamOverUsb(
         deviceName: String,
@@ -234,43 +242,50 @@ class UsbPortController(private val context: Context) {
         dataSize: Long,
         disableVerity: Boolean,
         verboseWireLogs: Boolean = false,
+        isCancelled: () -> Boolean = { false },
+        onChunkInfo: (chunkIndex: Int, totalChunks: Int, chunkBytes: Long) -> Unit = { _, _, _ -> },
         onProgress: (Float) -> Unit,
         onLog: (String, LogLevel) -> Unit
-    ) {
+    ): Boolean {
         val manager = usbManager ?: run {
             onLog("USB Host unavailable.", LogLevel.FAIL)
-            return
+            return false
         }
         val device = manager.deviceList[deviceName] ?: run {
             onLog("Fastboot device not attached.", LogLevel.FAIL)
-            return
+            return false
         }
         if (!manager.hasPermission(device)) {
             onLog("USB permission required. Please allow access.", LogLevel.WARN)
             requestPermission(deviceName)
-            return
+            return false
         }
 
         val triple = findBulkEndpoints(device, preferProtocol = 0x03) ?: run {
             onLog("No Bulk endpoints found.", LogLevel.FAIL)
-            return
+            return false
         }
         val (iface, epIn, epOut) = triple
         val connection = manager.openDevice(device) ?: run {
             onLog("Unable to open USB connection.", LogLevel.FAIL)
-            return
+            return false
         }
 
         try {
             if (!connection.claimInterface(iface, true)) {
                 onLog("Unable to claim USB interface.", LogLevel.FAIL)
-                return
+                return false
             }
 
-            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                FileInputStream(pfd.fileDescriptor).use { fis ->
+            val pfd = context.contentResolver.openFileDescriptor(uri, "r") ?: run {
+                onLog("Could not open selected file.", LogLevel.FAIL)
+                return false
+            }
+
+            pfd.use { fd ->
+                FileInputStream(fd.fileDescriptor).use { fis ->
                     val channel = fis.channel
-                    val fileTotal = pfd.statSize.takeIf { it > 0 } ?: channel.size()
+                    val fileTotal = fd.statSize.takeIf { it > 0 } ?: channel.size()
                     val streamBytes = if (dataSize > 0L) {
                         dataSize.coerceAtMost(fileTotal - dataOffset)
                     } else {
@@ -279,93 +294,190 @@ class UsbPortController(private val context: Context) {
 
                     if (streamBytes <= 0L) {
                         onLog("Selected file is empty.", LogLevel.FAIL)
-                        return
+                        return false
                     }
 
-                    channel.position(dataOffset)
+                    val bootloaderMax = queryFastbootMaxDownloadSize(connection, epIn, epOut)
+                    val safeMaxChunk = minOf(
+                        bootloaderMax ?: SparseChunkPlanner.DEFAULT_SAFE_CHUNK_BYTES,
+                        SparseChunkPlanner.DEFAULT_SAFE_CHUNK_BYTES
+                    ).coerceAtLeast(16L * 1024L * 1024L)
 
-                    val transferSize = streamBytes.coerceAtMost(MAX_FASTBOOT_CHUNK)
-                    if (streamBytes > MAX_FASTBOOT_CHUNK) {
-                        onLog(
-                            "Image exceeds 256MB buffer; transferring first 256MB chunk.",
-                            LogLevel.WARN
+                    if (streamBytes <= safeMaxChunk) {
+                        onChunkInfo(1, 1, streamBytes)
+                        return streamSingleDownloadAndFlash(
+                            connection = connection,
+                            epIn = epIn,
+                            epOut = epOut,
+                            fis = fis,
+                            channel = channel,
+                            partition = partition,
+                            dataOffset = dataOffset,
+                            transferSize = streamBytes,
+                            disableVerity = disableVerity,
+                            verboseWireLogs = verboseWireLogs,
+                            isCancelled = isCancelled,
+                            onProgress = onProgress,
+                            onLog = onLog
                         )
                     }
 
-                    val downloadCmd = String.format(Locale.US, "download:%08x", transferSize)
-                    val cmdBytes = downloadCmd.toByteArray(StandardCharsets.US_ASCII)
-                    val txCmd = connection.bulkTransfer(epOut, cmdBytes, cmdBytes.size, 4000)
-                    if (txCmd < 0) {
-                        onLog("Failed to initiate transfer ($txCmd).", LogLevel.FAIL)
-                        return
-                    }
-                    if (verboseWireLogs) {
-                        onLog("TX -> $downloadCmd (${FlashFileProcessor.formatSize(transferSize)})", LogLevel.USB)
+                    // Oversized partition (e.g. system.img / super.img): split safely into sparse sub-packets
+                    val magicBuf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+                    val isSparse = channel.read(magicBuf, dataOffset) == 4 && run {
+                        magicBuf.flip()
+                        magicBuf.int == SparseChunkPlanner.SPARSE_HEADER_MAGIC
                     }
 
-                    val respBuf = ByteArray(64)
-                    val rx = connection.bulkTransfer(epIn, respBuf, respBuf.size, 4000)
-                    if (rx <= 0) {
-                        onLog("No response from bootloader.", LogLevel.FAIL)
-                        return
-                    }
-                    val reply = String(respBuf, 0, rx, StandardCharsets.US_ASCII).trim()
-                    if (verboseWireLogs) {
-                        onLog("RX <- $reply", LogLevel.USB)
-                    }
-                    if (!reply.startsWith("DATA")) {
-                        onLog("Bootloader rejected transfer: $reply", LogLevel.FAIL)
-                        return
+                    val packets = if (isSparse) {
+                        SparseChunkPlanner.planSparseSplits(
+                            channel = channel,
+                            baseOffset = dataOffset,
+                            streamSize = streamBytes,
+                            maxPacketBytes = safeMaxChunk
+                        )
+                    } else {
+                        SparseChunkPlanner.planRawToSparseSplits(
+                            baseOffset = dataOffset,
+                            streamSize = streamBytes,
+                            maxPacketBytes = safeMaxChunk
+                        )
                     }
 
-                    val chunk = ByteArray(16384)
-                    var sentTotal = 0L
-                    while (sentTotal < transferSize) {
-                        val toRead = minOf(chunk.size.toLong(), transferSize - sentTotal).toInt()
-                        val r = fis.read(chunk, 0, toRead)
-                        if (r <= 0) break
+                    if (packets.isEmpty()) {
+                        onLog("Failed to build chunk plan for $partition.", LogLevel.FAIL)
+                        return false
+                    }
 
-                        // If patching vbmeta with disable-verity (offset 123 flags byte in AVBHeader)
-                        if (sentTotal == 0L && disableVerity && partition.startsWith("vbmeta") && r >= 128) {
-                            if (chunk[0] == 'A'.code.toByte() &&
-                                chunk[1] == 'V'.code.toByte() &&
-                                chunk[2] == 'B'.code.toByte() &&
-                                chunk[3] == '0'.code.toByte()
-                            ) {
-                                chunk[123] = (chunk[123].toInt() or 0x03).toByte()
-                                onLog("AVB0 verity flags patched.", LogLevel.OKAY)
+                    onLog(
+                        "$partition (${FlashFileProcessor.formatSize(streamBytes)}) split into ${packets.size} safe chunks (${FlashFileProcessor.formatSize(safeMaxChunk)} max).",
+                        LogLevel.INFO
+                    )
+
+                    val grandTotalBytes = packets.sumOf { it.totalTransferBytes }.coerceAtLeast(1L)
+                    var grandSentBytes = 0L
+                    val ioBuf = ByteArray(16384)
+
+                    for (packet in packets) {
+                        if (isCancelled()) {
+                            onLog("Transfer aborted by user.", LogLevel.WARN)
+                            return false
+                        }
+                        onChunkInfo(packet.packetIndex, packets.size, packet.totalTransferBytes)
+
+                        if (!initiateFastbootDownload(
+                                connection = connection,
+                                epIn = epIn,
+                                epOut = epOut,
+                                transferSize = packet.totalTransferBytes,
+                                verboseWireLogs = verboseWireLogs,
+                                onLog = onLog
+                            )
+                        ) {
+                            return false
+                        }
+
+                        val prefixHdr = packet.buildPacketPrefixHeader()
+                        if (connection.bulkTransfer(epOut, prefixHdr, prefixHdr.size, 6000) < 0) {
+                            onLog("USB header write failed on chunk ${packet.packetIndex}.", LogLevel.FAIL)
+                            return false
+                        }
+                        grandSentBytes += prefixHdr.size
+
+                        for (slice in packet.slices) {
+                            if (isCancelled()) return false
+                            when (slice) {
+                                is SparseChunkPlanner.ChunkSlice.RawSlice -> {
+                                    val chunkHdr = SparseChunkPlanner.SparseTransferPacket.buildChunkHeader(
+                                        type = SparseChunkPlanner.CHUNK_TYPE_RAW,
+                                        chunkBlocks = slice.outputBlocks,
+                                        totalBytes = SparseChunkPlanner.CHUNK_HEADER_SIZE + slice.blockAlignedByteLength
+                                    )
+                                    if (connection.bulkTransfer(epOut, chunkHdr, chunkHdr.size, 6000) < 0) {
+                                        onLog("USB chunk header write failed.", LogLevel.FAIL)
+                                        return false
+                                    }
+                                    grandSentBytes += chunkHdr.size
+
+                                    channel.position(slice.fileOffset)
+                                    var sliceSent = 0L
+                                    while (sliceSent < slice.readByteLength) {
+                                        if (isCancelled()) return false
+                                        val toRead = minOf(ioBuf.size.toLong(), slice.readByteLength - sliceSent).toInt()
+                                        val r = fis.read(ioBuf, 0, toRead)
+                                        if (r <= 0) {
+                                            onLog("Unexpected EOF reading $partition.", LogLevel.FAIL)
+                                            return false
+                                        }
+                                        val w = connection.bulkTransfer(epOut, ioBuf, r, 8000)
+                                        if (w < 0) {
+                                            onLog("USB write failed ($w) on chunk ${packet.packetIndex}.", LogLevel.FAIL)
+                                            return false
+                                        }
+                                        sliceSent += w
+                                        grandSentBytes += w
+                                        onProgress((grandSentBytes.toFloat() / grandTotalBytes.toFloat()).coerceIn(0f, 1f))
+                                    }
+
+                                    var padRem = slice.blockAlignedByteLength - slice.readByteLength
+                                    if (padRem > 0L) {
+                                        val padBuf = ByteArray(padRem.toInt().coerceAtMost(4096))
+                                        while (padRem > 0L) {
+                                            val sendPad = minOf(padRem, padBuf.size.toLong()).toInt()
+                                            if (connection.bulkTransfer(epOut, padBuf, sendPad, 4000) < 0) {
+                                                return false
+                                            }
+                                            padRem -= sendPad
+                                            grandSentBytes += sendPad
+                                        }
+                                    }
+                                }
+
+                                is SparseChunkPlanner.ChunkSlice.FillSlice -> {
+                                    val chunkHdr = SparseChunkPlanner.SparseTransferPacket.buildChunkHeader(
+                                        type = SparseChunkPlanner.CHUNK_TYPE_FILL,
+                                        chunkBlocks = slice.outputBlocks,
+                                        totalBytes = SparseChunkPlanner.CHUNK_HEADER_SIZE + 4L
+                                    )
+                                    val combined = chunkHdr + slice.fillBytes4
+                                    if (connection.bulkTransfer(epOut, combined, combined.size, 6000) < 0) {
+                                        return false
+                                    }
+                                    grandSentBytes += combined.size
+                                }
+
+                                is SparseChunkPlanner.ChunkSlice.DontCareSlice -> {
+                                    val chunkHdr = SparseChunkPlanner.SparseTransferPacket.buildChunkHeader(
+                                        type = SparseChunkPlanner.CHUNK_TYPE_DONT_CARE,
+                                        chunkBlocks = slice.outputBlocks,
+                                        totalBytes = SparseChunkPlanner.CHUNK_HEADER_SIZE.toLong()
+                                    )
+                                    if (connection.bulkTransfer(epOut, chunkHdr, chunkHdr.size, 6000) < 0) {
+                                        return false
+                                    }
+                                    grandSentBytes += chunkHdr.size
+                                }
                             }
                         }
 
-                        val written = connection.bulkTransfer(epOut, chunk, r, 6000)
-                        if (written < 0) {
-                            onLog("USB write failed ($written).", LogLevel.FAIL)
-                            return
+                        if (!readFastbootResponses(connection, epIn, 15000, verboseWireLogs, onLog)) {
+                            return false
                         }
-                        sentTotal += written
-                        onProgress((sentTotal.toFloat() / transferSize.toFloat()).coerceIn(0f, 1f))
+                        if (!sendFastbootFlashCommand(connection, epIn, epOut, partition, 45000, verboseWireLogs, onLog)) {
+                            return false
+                        }
+                        onLog(
+                            "$partition chunk ${packet.packetIndex}/${packets.size} flashed OK.",
+                            LogLevel.OKAY
+                        )
                     }
-
-                    onLog("Sent ${FlashFileProcessor.formatSize(sentTotal)} to device.", LogLevel.OKAY)
-                    if (!readFastbootResponses(connection, epIn, 8000, verboseWireLogs, onLog)) {
-                        return
-                    }
-
-                    val flashCmd = "flash:$partition"
-                    val flashBytes = flashCmd.toByteArray(StandardCharsets.US_ASCII)
-                    val txFlash = connection.bulkTransfer(epOut, flashBytes, flashBytes.size, 4000)
-                    if (txFlash < 0) {
-                        onLog("Flash transfer failed ($txFlash).", LogLevel.FAIL)
-                        return
-                    }
-                    if (verboseWireLogs) {
-                        onLog("TX -> $flashCmd", LogLevel.USB)
-                    }
-                    readFastbootResponses(connection, epIn, 25000, verboseWireLogs, onLog)
+                    onProgress(1f)
+                    return true
                 }
-            } ?: onLog("Could not open selected file.", LogLevel.FAIL)
+            }
         } catch (e: Exception) {
             onLog("Flash error: ${e.message}", LogLevel.FAIL)
+            return false
         } finally {
             try {
                 connection.releaseInterface(iface)
@@ -373,6 +485,148 @@ class UsbPortController(private val context: Context) {
             } catch (_: Exception) {
             }
         }
+    }
+
+    private fun queryFastbootMaxDownloadSize(
+        connection: UsbDeviceConnection,
+        epIn: UsbEndpoint,
+        epOut: UsbEndpoint
+    ): Long? {
+        return try {
+            val cmd = "getvar:max-download-size".toByteArray(StandardCharsets.US_ASCII)
+            if (connection.bulkTransfer(epOut, cmd, cmd.size, 2500) < 0) return null
+            val buf = ByteArray(128)
+            val rx = connection.bulkTransfer(epIn, buf, buf.size, 2500)
+            if (rx < 4) return null
+            val resp = String(buf, 0, rx, StandardCharsets.US_ASCII).trim()
+            if (!resp.startsWith("OKAY")) return null
+            val valueStr = resp.removePrefix("OKAY").trim().lowercase(Locale.US)
+            val parsed = if (valueStr.startsWith("0x")) {
+                valueStr.removePrefix("0x").toLongOrNull(16)
+            } else {
+                valueStr.toLongOrNull()
+            }
+            parsed?.takeIf { it >= 16L * 1024L * 1024L }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun initiateFastbootDownload(
+        connection: UsbDeviceConnection,
+        epIn: UsbEndpoint,
+        epOut: UsbEndpoint,
+        transferSize: Long,
+        verboseWireLogs: Boolean,
+        onLog: (String, LogLevel) -> Unit
+    ): Boolean {
+        val downloadCmd = String.format(Locale.US, "download:%08x", transferSize)
+        val cmdBytes = downloadCmd.toByteArray(StandardCharsets.US_ASCII)
+        val txCmd = connection.bulkTransfer(epOut, cmdBytes, cmdBytes.size, 4000)
+        if (txCmd < 0) {
+            onLog("Failed to initiate transfer ($txCmd).", LogLevel.FAIL)
+            return false
+        }
+        if (verboseWireLogs) {
+            onLog("TX -> $downloadCmd (${FlashFileProcessor.formatSize(transferSize)})", LogLevel.USB)
+        }
+
+        val respBuf = ByteArray(64)
+        val rx = connection.bulkTransfer(epIn, respBuf, respBuf.size, 5000)
+        if (rx <= 0) {
+            onLog("No response from bootloader.", LogLevel.FAIL)
+            return false
+        }
+        val reply = String(respBuf, 0, rx, StandardCharsets.US_ASCII).trim()
+        if (verboseWireLogs) {
+            onLog("RX <- $reply", LogLevel.USB)
+        }
+        if (!reply.startsWith("DATA")) {
+            onLog("Bootloader rejected transfer: $reply", LogLevel.FAIL)
+            return false
+        }
+        return true
+    }
+
+    private fun sendFastbootFlashCommand(
+        connection: UsbDeviceConnection,
+        epIn: UsbEndpoint,
+        epOut: UsbEndpoint,
+        partition: String,
+        timeoutMs: Int,
+        verboseWireLogs: Boolean,
+        onLog: (String, LogLevel) -> Unit
+    ): Boolean {
+        val flashCmd = "flash:$partition"
+        val flashBytes = flashCmd.toByteArray(StandardCharsets.US_ASCII)
+        val txFlash = connection.bulkTransfer(epOut, flashBytes, flashBytes.size, 4000)
+        if (txFlash < 0) {
+            onLog("Flash transfer failed ($txFlash).", LogLevel.FAIL)
+            return false
+        }
+        if (verboseWireLogs) {
+            onLog("TX -> $flashCmd", LogLevel.USB)
+        }
+        return readFastbootResponses(connection, epIn, timeoutMs, verboseWireLogs, onLog)
+    }
+
+    private fun streamSingleDownloadAndFlash(
+        connection: UsbDeviceConnection,
+        epIn: UsbEndpoint,
+        epOut: UsbEndpoint,
+        fis: FileInputStream,
+        channel: java.nio.channels.FileChannel,
+        partition: String,
+        dataOffset: Long,
+        transferSize: Long,
+        disableVerity: Boolean,
+        verboseWireLogs: Boolean,
+        isCancelled: () -> Boolean,
+        onProgress: (Float) -> Unit,
+        onLog: (String, LogLevel) -> Unit
+    ): Boolean {
+        if (!initiateFastbootDownload(connection, epIn, epOut, transferSize, verboseWireLogs, onLog)) {
+            return false
+        }
+
+        channel.position(dataOffset)
+        val chunk = ByteArray(16384)
+        var sentTotal = 0L
+        while (sentTotal < transferSize) {
+            if (isCancelled()) {
+                onLog("Transfer aborted by user.", LogLevel.WARN)
+                return false
+            }
+            val toRead = minOf(chunk.size.toLong(), transferSize - sentTotal).toInt()
+            val r = fis.read(chunk, 0, toRead)
+            if (r <= 0) break
+
+            // Patch vbmeta disable-verity flag at AVBHeader offset 123 if requested
+            if (sentTotal == 0L && disableVerity && partition.startsWith("vbmeta") && r >= 128) {
+                if (chunk[0] == 'A'.code.toByte() &&
+                    chunk[1] == 'V'.code.toByte() &&
+                    chunk[2] == 'B'.code.toByte() &&
+                    chunk[3] == '0'.code.toByte()
+                ) {
+                    chunk[123] = (chunk[123].toInt() or 0x03).toByte()
+                    onLog("AVB0 verity flags patched.", LogLevel.OKAY)
+                }
+            }
+
+            val written = connection.bulkTransfer(epOut, chunk, r, 6000)
+            if (written < 0) {
+                onLog("USB write failed ($written).", LogLevel.FAIL)
+                return false
+            }
+            sentTotal += written
+            onProgress((sentTotal.toFloat() / transferSize.toFloat()).coerceIn(0f, 1f))
+        }
+
+        onLog("Sent ${FlashFileProcessor.formatSize(sentTotal)} to $partition.", LogLevel.OKAY)
+        if (!readFastbootResponses(connection, epIn, 10000, verboseWireLogs, onLog)) {
+            return false
+        }
+        return sendFastbootFlashCommand(connection, epIn, epOut, partition, 30000, verboseWireLogs, onLog)
     }
 
     /**

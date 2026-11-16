@@ -1,6 +1,6 @@
 <resources>
     <string name="app_name">FastDeck OTG</string>
-    <string name="subtitle_service_suite">Android 10–16 ADB &amp; Fastboot Service Suite</string>
+    <string name="subtitle_service_suite">All-Android (5–16) ADB &amp; Fastboot Service Suite</string>
     <string name="tab_dashboard">Port &amp; Device</string>
     <string name="tab_adb_ops">ADB Service</string>
     <string name="tab_fastboot_flash">Fastboot Flash</string>

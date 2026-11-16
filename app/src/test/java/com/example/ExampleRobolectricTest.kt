@@ -39,23 +39,39 @@ class ExampleRobolectricTest {
         val appName = context.getString(R.string.app_name)
         assertEquals("FastDeck OTG", appName)
 
-        assertTrue(CommandRepository.allActions.size >= 70)
+        assertTrue(CommandRepository.allActions.size >= 150)
         assertTrue(
             CommandRepository.allActions.all {
-                it.command.isNotBlank() && it.title.isNotBlank() && it.description.isNotBlank()
+                it.id.isNotBlank() && it.command.isNotBlank() && it.title.isNotBlank() && it.description.isNotBlank()
             }
         )
-        // Verify all 6 ADB/Fastboot service categories have commands
-        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.INFO })
-        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.UNLOCK })
-        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.SERVICE })
-        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.INFO })
-        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.UNLOCK })
-        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.SERVICE })
+        // Verify every action ID is strictly unique (required for LazyColumn keys in AboutScreen)
+        val allIds = CommandRepository.allActions.map { it.id }
+        assertEquals(allIds.size, allIds.distinct().size)
+
+        // Verify ALL 9 Brands have commands in ALL 6 ADB/Fastboot service tabs
+        val protocols = listOf(true, false)
+        val groups = listOf(ActionGroup.INFO, ActionGroup.UNLOCK, ActionGroup.SERVICE)
+        for (brand in ServiceBrand.entries) {
+            for (isAdb in protocols) {
+                for (group in groups) {
+                    val count = CommandRepository.allActions.count {
+                        it.brand == brand && it.isAdb == isAdb && it.group == group
+                    }
+                    assertTrue(
+                        "Missing commands for brand=${brand.name}, isAdb=$isAdb, group=${group.name}",
+                        count > 0
+                    )
+                }
+            }
+        }
+        // Verify legacy (Android 5-9) and modern (Android 10-16) commands coexist
+        assertTrue(CommandRepository.allActions.any { it.command.contains("oem unlock") })
+        assertTrue(CommandRepository.allActions.any { it.command.contains("flashing unlock") })
     }
 
     @Test
-    fun `verify partition inference for Android 10 to 16 images`() {
+    fun `verify partition inference for Android 5 to 16 images`() {
         assertEquals("init_boot", FlashFileProcessor.inferPartition("init_boot_magisk.img"))
         assertEquals("vendor_boot", FlashFileProcessor.inferPartition("vendor_boot.img"))
         assertEquals("vbmeta", FlashFileProcessor.inferPartition("vbmeta.img"))
@@ -218,5 +234,225 @@ class ExampleRobolectricTest {
             0x03, 0x02, 0x1A, 0x05, 0x00, 0x04, 0x14
         ) + token
         assertArrayEquals(expectedDigestInfo, recovered)
+    }
+
+    @Test
+    fun `verify scatter txt parser extracts platform storage and partitions accurately`() {
+        val scatterSample = """
+            - general: MTK_PLATFORM_CFG
+              info:
+                - config_version: V2.2.2
+                  platform: MT6768
+                  project: merlin
+                  storage: EMMC
+                  boot_channel: MSDC_0
+            - partition_index: SYS0
+              partition_name: preloader
+              file_name: preloader_merlin.bin
+              is_download: true
+              linear_start_addr: 0x0
+              partition_size: 0x40000
+            - partition_index: SYS1
+              partition_name: boot
+              file_name: boot.img
+              is_download: true
+              linear_start_addr: 0x1000000
+              partition_size: 0x4000000
+            - partition_index: SYS2
+              partition_name: super
+              file_name: super.img
+              is_download: true
+              linear_start_addr: 0x8000000
+              partition_size: 0x180000000
+            - partition_index: SYS3
+              partition_name: proinfo
+              file_name: NONE
+              is_download: false
+              linear_start_addr: 0x80000
+              partition_size: 0x300000
+        """.trimIndent()
+
+        val (steps, fwInfo) = FlashFileProcessor.parseScatterContent(
+            text = scatterSample,
+            folderFiles = emptyMap(),
+            sparseChecker = { false }
+        )
+
+        assertEquals("MediaTek Android Scatter", fwInfo.formatLabel)
+        assertEquals("MT6768", fwInfo.chipsetOrPlatform)
+        assertEquals("merlin", fwInfo.projectOrBoard)
+        assertEquals("EMMC", fwInfo.storageType)
+        assertEquals(4, steps.size)
+        assertTrue(steps[0].isFlashable && steps[0].enabled)
+        assertEquals("boot", steps[1].targetPartition)
+        assertEquals(0x4000000L, steps[1].dataSize)
+        assertEquals("super", steps[2].targetPartition)
+        assertTrue(fwInfo.largePartitionNames.contains("super"))
+        assertTrue(!steps[3].isFlashable && !steps[3].enabled)
+    }
+
+    @Test
+    fun `verify rawprogram0 xml parser extracts UFS sectors partitions and sparse flags`() {
+        val rawprogramXml = """
+            <?xml version="1.0" ?>
+            <data>
+              <program SECTOR_SIZE_IN_BYTES="4096" file_sector_offset="0" filename="boot.img" label="boot_a" num_partition_sectors="16384" physical_partition_number="4" sparse="false" start_sector="100"/>
+              <program SECTOR_SIZE_IN_BYTES="4096" file_sector_offset="0" filename="super.img" label="super" num_partition_sectors="1572864" physical_partition_number="0" sparse="true" start_sector="2048"/>
+              <program SECTOR_SIZE_IN_BYTES="4096" file_sector_offset="0" filename="" label="userdata" num_partition_sectors="100000" physical_partition_number="0" sparse="false" start_sector="99999"/>
+            </data>
+        """.trimIndent()
+
+        val (steps, fwInfo) = FlashFileProcessor.parseRawprogramXmlContent(
+            xmlList = listOf("rawprogram0.xml" to rawprogramXml),
+            folderFiles = emptyMap(),
+            sparseChecker = { false }
+        )
+
+        assertEquals("Qualcomm Firehose Rawprogram XML", fwInfo.formatLabel)
+        assertEquals(4096, fwInfo.sectorSizeBytes)
+        assertEquals(3, steps.size)
+        assertEquals("boot_a", steps[0].targetPartition)
+        assertEquals(16384L * 4096L, steps[0].dataSize)
+        assertEquals("super", steps[1].targetPartition)
+        assertTrue(steps[1].isSparse)
+        assertTrue(fwInfo.largePartitionNames.contains("super"))
+        assertTrue(!steps[2].isFlashable && !steps[2].enabled)
+    }
+
+    @Test
+    fun `verify flash bat parser detects board and partitions cleanly`() {
+        val batScript = """
+            @echo off
+            fastboot %* getvar product 2>&1 | findstr /r /c:"^product: *sweet" || exit /B 1
+            fastboot %* erase boot_a
+            fastboot %* flash boot_a %~dp0images\boot.img || exit /B 1
+            fastboot %* flash super %~dp0images\super.img || exit /B 1
+            fastboot %* reboot
+        """.trimIndent()
+
+        val (steps, fwInfo) = FlashFileProcessor.parseScriptContent(
+            scriptText = batScript,
+            fileName = "flash_all.bat",
+            folderFiles = emptyMap(),
+            sparseChecker = { false }
+        )
+
+        assertEquals("sweet", fwInfo.projectOrBoard)
+        assertEquals(3, steps.size)
+        assertEquals("boot_a", steps[0].targetPartition)
+        assertEquals("boot_a", steps[1].targetPartition)
+        assertEquals("images/boot.img", steps[1].sourceName)
+        assertEquals("super", steps[2].targetPartition)
+    }
+
+    @Test
+    fun `verify sparse chunk planner splits oversized sparse and raw images with valid headers`() {
+        val tempSparse = java.io.File.createTempFile("test_sparse", ".img")
+        val tempRaw = java.io.File.createTempFile("test_raw", ".img")
+        try {
+            val blkSz = 4096
+            // Build synthetic Sparse image: 3 RAW chunks (2 blocks each = 8192B) + 1 FILL chunk (4 blocks)
+            val chunkPayload = ByteArray(blkSz * 2) { 0x5A }
+            val sparseBytes = ByteBuffer.allocate(28 + 3 * (12 + chunkPayload.size) + 16)
+                .order(ByteOrder.LITTLE_ENDIAN).apply {
+                    putInt(com.example.data.SparseChunkPlanner.SPARSE_HEADER_MAGIC)
+                    putShort(1); putShort(0); putShort(28); putShort(12)
+                    putInt(blkSz); putInt(10); putInt(4); putInt(0)
+
+                    repeat(3) {
+                        putShort(com.example.data.SparseChunkPlanner.CHUNK_TYPE_RAW)
+                        putShort(0); putInt(2); putInt(12 + chunkPayload.size)
+                        put(chunkPayload)
+                    }
+                    putShort(com.example.data.SparseChunkPlanner.CHUNK_TYPE_FILL)
+                    putShort(0); putInt(4); putInt(16)
+                    putInt(0x12345678)
+                }.array()
+            tempSparse.writeBytes(sparseBytes)
+
+            java.io.RandomAccessFile(tempSparse, "r").channel.use { ch ->
+                val packets = com.example.data.SparseChunkPlanner.planSparseSplits(
+                    channel = ch,
+                    baseOffset = 0L,
+                    streamSize = sparseBytes.size.toLong(),
+                    maxPacketBytes = 10000L // forces splitting across multiple packets!
+                )
+                assertTrue(packets.size >= 3)
+                assertEquals(0L, packets.first().leadingDontCareBlocks)
+                assertTrue(packets[1].leadingDontCareBlocks > 0L)
+                packets.forEach { pkt ->
+                    assertTrue(pkt.totalTransferBytes <= 10000L)
+                    val hdr = ByteBuffer.wrap(pkt.buildPacketPrefixHeader()).order(ByteOrder.LITTLE_ENDIAN)
+                    assertEquals(com.example.data.SparseChunkPlanner.SPARSE_HEADER_MAGIC, hdr.int)
+                }
+            }
+
+            // Build synthetic non-4K-aligned Raw image (25,000 bytes) & split across 10 KB chunks
+            val rawBytes = ByteArray(25000) { (it and 0xFF).toByte() }
+            tempRaw.writeBytes(rawBytes)
+            val rawPackets = com.example.data.SparseChunkPlanner.planRawToSparseSplits(
+                baseOffset = 0L,
+                streamSize = rawBytes.size.toLong(),
+                maxPacketBytes = 10000L,
+                blockSize = 4096
+            )
+            assertTrue(rawPackets.size >= 3)
+            val coveredReadBytes = rawPackets.flatMap { it.slices }
+                .filterIsInstance<com.example.data.SparseChunkPlanner.ChunkSlice.RawSlice>()
+                .sumOf { it.readByteLength }
+            assertEquals(25000L, coveredReadBytes)
+        } finally {
+            tempSparse.delete()
+            tempRaw.delete()
+        }
+    }
+
+    @Test
+    fun `verify ViewModel flash options clearUserdata autoReboot toggleAll and FW info logging`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = ServiceViewModel(app)
+
+        assertTrue(!vm.uiState.value.clearUserdata)
+        assertTrue(vm.uiState.value.autoReboot)
+        vm.toggleClearUserdata()
+        vm.toggleAutoReboot()
+        assertTrue(vm.uiState.value.clearUserdata)
+        assertTrue(!vm.uiState.value.autoReboot)
+
+        val (steps, fwInfo) = FlashFileProcessor.parseRawprogramXmlContent(
+            xmlList = listOf(
+                "rawprogram0.xml" to """
+                    <data>
+                      <program SECTOR_SIZE_IN_BYTES="4096" filename="boot.img" label="boot" num_partition_sectors="1024" physical_partition_number="0" sparse="false" start_sector="10"/>
+                      <program SECTOR_SIZE_IN_BYTES="4096" filename="super.img" label="super" num_partition_sectors="100000" physical_partition_number="0" sparse="true" start_sector="2000"/>
+                    </data>
+                """.trimIndent()
+            ),
+            folderFiles = emptyMap(),
+            sparseChecker = { false }
+        )
+
+        val selected = com.example.model.SelectedFlashFile(
+            uriString = "content://test/rawprogram0.xml",
+            fileName = "rawprogram0.xml",
+            fileSizeBytes = steps.sumOf { it.dataSize },
+            formattedSize = FlashFileProcessor.formatSize(steps.sumOf { it.dataSize }),
+            fileType = com.example.model.FlashFileType.RAWPROGRAM,
+            magicHeaderHex = "XML",
+            isSparseImage = true,
+            sparseInfo = "QC",
+            steps = steps,
+            firmwareInfo = fwInfo
+        )
+        vm.applyParsedFirmware(selected)
+
+        val logsText = vm.uiState.value.consoleLogs.joinToString("\n") { it.message }
+        assertTrue(logsText.contains("Qualcomm Firehose Rawprogram XML"))
+        assertTrue(logsText.contains("super"))
+
+        vm.toggleAllFlashSteps(false)
+        assertTrue(vm.uiState.value.selectedFlashFile!!.steps.none { it.enabled })
+        vm.toggleAllFlashSteps(true)
+        assertTrue(vm.uiState.value.selectedFlashFile!!.steps.all { it.enabled })
     }
 }
