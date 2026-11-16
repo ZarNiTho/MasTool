@@ -66,13 +66,14 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.TerminalLine
-import com.example.model.ThemeMode
 import com.example.ui.ServiceUiState
+import com.example.ui.theme.LocalAppPalette
+import com.example.ui.theme.LocalFontConfig
 
 /**
  * Pure Termux-style Fullscreen CLI Terminal Box.
  * Relies cleanly on parent Scaffold WindowInsets.safeDrawing padding (no duplicate imePadding).
- * Supports both Dark (#000000) and Light (#F8FAFC) themes.
+ * Inherits active ThemeDesign (Cyber Neon, Emerald Matrix, Crimson Forge), Dark/Light mode, and FontSize.
  */
 @Composable
 fun FullscreenCliTerminalScreen(
@@ -81,16 +82,18 @@ fun FullscreenCliTerminalScreen(
     onSubmitCommand: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isDark = uiState.themeMode == ThemeMode.DARK
-    val terminalBg = if (isDark) Color(0xFF000000) else Color(0xFFF8FAFC)
-    val dockBg = if (isDark) Color(0xFF0A0D14) else Color(0xFFFFFFFF)
-    val dividerColor = if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1)
-    val promptColor = if (isDark) Color(0xFF4ADE80) else Color(0xFF047857)
-    val inputColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF0F172A)
-    val hintColor = if (isDark) Color(0xFF64748B) else Color(0xFF94A3B8)
-    val keyBg = if (isDark) Color(0xFF111827) else Color(0xFFF1F5F9)
-    val keyBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
-    val keyTextColor = if (isDark) Color(0xFFE2E8F0) else Color(0xFF0F172A)
+    val palette = LocalAppPalette.current
+    val fontConfig = LocalFontConfig.current
+
+    val terminalBg = palette.terminalBg
+    val dockBg = palette.headerBg
+    val dividerColor = palette.divider
+    val promptColor = palette.accentPrimary
+    val inputColor = palette.textPrimary
+    val hintColor = palette.textMuted
+    val keyBg = palette.cardAltBg
+    val keyBorder = palette.cardBorder
+    val keyTextColor = palette.textPrimary
 
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
@@ -184,7 +187,7 @@ fun FullscreenCliTerminalScreen(
             .background(terminalBg)
             .testTag("fullscreen_termux_terminal")
     ) {
-        // Scrollable, copy-selectable CLI output area (never wraps the BasicTextField!)
+        // Scrollable, copy-selectable CLI output area (never wraps BasicTextField)
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -204,7 +207,7 @@ fun FullscreenCliTerminalScreen(
                 Text(
                     text = "~ $ ready (type 'help', 'adb devices', or 'fastboot devices')",
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 12.5.sp,
+                    fontSize = fontConfig.terminalOutSp,
                     color = hintColor,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp)
                 )
@@ -216,14 +219,14 @@ fun FullscreenCliTerminalScreen(
                         modifier = Modifier.fillMaxSize()
                     ) {
                         items(uiState.terminalLines, key = { it.id }) { line ->
-                            TermuxOutputLine(line = line, isDark = isDark)
+                            TermuxOutputLine(line = line)
                         }
                     }
                 }
             }
         }
 
-        // Termux Extra-Keys Bar (always stays pinned directly above the prompt & keyboard)
+        // Termux Extra-Keys Bar
         HorizontalDivider(color = dividerColor)
         Row(
             modifier = Modifier
@@ -241,7 +244,7 @@ fun FullscreenCliTerminalScreen(
             TermuxExtraKey("reboot", keyBg, keyBorder, keyTextColor) { insertToken("reboot") }
             TermuxExtraKey("↑", keyBg, keyBorder, promptColor) { stepHistoryUp() }
             TermuxExtraKey("↓", keyBg, keyBorder, promptColor) { stepHistoryDown() }
-            TermuxExtraKey("CLS", keyBg, keyBorder, if (isDark) Color(0xFFF59E0B) else Color(0xFFD97706)) {
+            TermuxExtraKey("CLS", keyBg, keyBorder, palette.accentSecondary) {
                 historyCursor = -1
                 onSubmitCommand("clear")
             }
@@ -259,7 +262,7 @@ fun FullscreenCliTerminalScreen(
             Text(
                 text = "~ $ ",
                 fontFamily = FontFamily.Monospace,
-                fontSize = 14.sp,
+                fontSize = fontConfig.terminalCmdSp,
                 fontWeight = FontWeight.Bold,
                 color = promptColor
             )
@@ -273,7 +276,7 @@ fun FullscreenCliTerminalScreen(
                     Text(
                         text = "running...",
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 14.sp,
+                        fontSize = fontConfig.terminalCmdSp,
                         color = hintColor
                     )
                 } else {
@@ -281,7 +284,7 @@ fun FullscreenCliTerminalScreen(
                         Text(
                             text = "adb / fastboot command...",
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 13.5.sp,
+                            fontSize = fontConfig.terminalOutSp,
                             color = hintColor
                         )
                     }
@@ -303,7 +306,7 @@ fun FullscreenCliTerminalScreen(
                         textStyle = TextStyle(
                             color = inputColor,
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 14.sp,
+                            fontSize = fontConfig.terminalCmdSp,
                             lineHeight = 20.sp
                         ),
                         keyboardOptions = KeyboardOptions(
@@ -395,13 +398,15 @@ private fun TermuxExtraKey(
 
 @Composable
 private fun TermuxOutputLine(
-    line: TerminalLine,
-    isDark: Boolean
+    line: TerminalLine
 ) {
-    val promptColor = if (isDark) Color(0xFF4ADE80) else Color(0xFF047857)
-    val cmdColor = if (isDark) Color(0xFFFFFFFF) else Color(0xFF0F172A)
-    val outputColor = if (isDark) Color(0xFFE5E7EB) else Color(0xFF1E293B)
-    val errorColor = if (isDark) Color(0xFFF87171) else Color(0xFFDC2626)
+    val palette = LocalAppPalette.current
+    val fontConfig = LocalFontConfig.current
+
+    val promptColor = palette.accentPrimary
+    val cmdColor = palette.textPrimary
+    val outputColor = if (palette.isDark) Color(0xFFE5E7EB) else palette.textSecondary
+    val errorColor = if (palette.isDark) Color(0xFFF87171) else Color(0xFFDC2626)
 
     if (line.isCommand) {
         val promptPrefix = "~ $ "
@@ -416,7 +421,7 @@ private fun TermuxOutputLine(
                 }
             },
             fontFamily = FontFamily.Monospace,
-            fontSize = 13.5.sp,
+            fontSize = fontConfig.terminalCmdSp,
             lineHeight = 19.sp,
             modifier = Modifier
                 .fillMaxWidth()
@@ -426,7 +431,7 @@ private fun TermuxOutputLine(
         Text(
             text = line.text,
             fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
+            fontSize = fontConfig.terminalOutSp,
             lineHeight = 18.sp,
             color = if (line.isError) errorColor else outputColor,
             modifier = Modifier

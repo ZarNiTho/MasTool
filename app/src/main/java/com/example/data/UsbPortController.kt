@@ -159,35 +159,36 @@ class UsbPortController(private val context: Context) {
     fun executeFastbootWireCommands(
         deviceName: String,
         wireCommands: List<String>,
+        verboseWireLogs: Boolean = false,
         onLog: (String, LogLevel) -> Unit
     ) {
         val manager = usbManager ?: run {
-            onLog("UsbManager service unavailable.", LogLevel.FAIL)
+            onLog("USB Host unavailable.", LogLevel.FAIL)
             return
         }
         val device = manager.deviceList[deviceName] ?: run {
-            onLog("USB OTG device '$deviceName' not attached.", LogLevel.FAIL)
+            onLog("Device not attached.", LogLevel.FAIL)
             return
         }
         if (!manager.hasPermission(device)) {
-            onLog("USB permission required for ${device.deviceName}. Requesting permission...", LogLevel.WARN)
+            onLog("USB permission required. Please allow access.", LogLevel.WARN)
             requestPermission(deviceName)
             return
         }
 
         val triple = findBulkEndpoints(device, preferProtocol = 0x03) ?: run {
-            onLog("No USB Bulk IN/OUT endpoints found on ${device.deviceName}.", LogLevel.FAIL)
+            onLog("No USB Bulk endpoints found.", LogLevel.FAIL)
             return
         }
         val (iface, epIn, epOut) = triple
         val connection = manager.openDevice(device) ?: run {
-            onLog("Failed to open UsbDeviceConnection for ${device.deviceName}.", LogLevel.FAIL)
+            onLog("Failed to open USB connection.", LogLevel.FAIL)
             return
         }
 
         try {
             if (!connection.claimInterface(iface, true)) {
-                onLog("Failed to claim Fastboot USB interface #${iface.id}.", LogLevel.FAIL)
+                onLog("Failed to claim Fastboot interface.", LogLevel.FAIL)
                 return
             }
 
@@ -195,17 +196,19 @@ class UsbPortController(private val context: Context) {
                 val payload = wireCommand.toByteArray(StandardCharsets.US_ASCII)
                 val tx = connection.bulkTransfer(epOut, payload, payload.size, 4000)
                 if (tx < 0) {
-                    onLog("USB Bulk OUT write failed ($tx) for '$wireCommand'.", LogLevel.FAIL)
+                    onLog("USB transfer failed ($tx).", LogLevel.FAIL)
                     return
                 }
-                onLog("TX ($tx B) -> $wireCommand", LogLevel.USB)
+                if (verboseWireLogs) {
+                    onLog("TX ($tx B) -> $wireCommand", LogLevel.USB)
+                }
 
                 val timeoutMs = if (wireCommand.startsWith("erase:") || wireCommand.startsWith("flash:")) {
                     15000
                 } else {
                     4000
                 }
-                val ok = readFastbootResponses(connection, epIn, timeoutMs, onLog)
+                val ok = readFastbootResponses(connection, epIn, timeoutMs, verboseWireLogs, onLog)
                 if (!ok) break
             }
         } catch (e: Exception) {
@@ -230,25 +233,26 @@ class UsbPortController(private val context: Context) {
         dataOffset: Long,
         dataSize: Long,
         disableVerity: Boolean,
+        verboseWireLogs: Boolean = false,
         onProgress: (Float) -> Unit,
         onLog: (String, LogLevel) -> Unit
     ) {
         val manager = usbManager ?: run {
-            onLog("UsbManager unavailable.", LogLevel.FAIL)
+            onLog("USB Host unavailable.", LogLevel.FAIL)
             return
         }
         val device = manager.deviceList[deviceName] ?: run {
-            onLog("USB OTG Fastboot device not attached.", LogLevel.FAIL)
+            onLog("Fastboot device not attached.", LogLevel.FAIL)
             return
         }
         if (!manager.hasPermission(device)) {
-            onLog("USB permission required for ${device.deviceName}.", LogLevel.WARN)
+            onLog("USB permission required. Please allow access.", LogLevel.WARN)
             requestPermission(deviceName)
             return
         }
 
         val triple = findBulkEndpoints(device, preferProtocol = 0x03) ?: run {
-            onLog("No Bulk endpoints on ${device.deviceName}.", LogLevel.FAIL)
+            onLog("No Bulk endpoints found.", LogLevel.FAIL)
             return
         }
         val (iface, epIn, epOut) = triple
@@ -259,7 +263,7 @@ class UsbPortController(private val context: Context) {
 
         try {
             if (!connection.claimInterface(iface, true)) {
-                onLog("Unable to claim USB interface #${iface.id}.", LogLevel.FAIL)
+                onLog("Unable to claim USB interface.", LogLevel.FAIL)
                 return
             }
 
@@ -274,7 +278,7 @@ class UsbPortController(private val context: Context) {
                     }
 
                     if (streamBytes <= 0L) {
-                        onLog("Selected file stream has 0 bytes to transfer.", LogLevel.FAIL)
+                        onLog("Selected file is empty.", LogLevel.FAIL)
                         return
                     }
 
@@ -283,7 +287,7 @@ class UsbPortController(private val context: Context) {
                     val transferSize = streamBytes.coerceAtMost(MAX_FASTBOOT_CHUNK)
                     if (streamBytes > MAX_FASTBOOT_CHUNK) {
                         onLog(
-                            "Image size (${FlashFileProcessor.formatSize(streamBytes)}) exceeds 256MB single buffer; transferring first 256MB chunk.",
+                            "Image exceeds 256MB buffer; transferring first 256MB chunk.",
                             LogLevel.WARN
                         )
                     }
@@ -292,21 +296,25 @@ class UsbPortController(private val context: Context) {
                     val cmdBytes = downloadCmd.toByteArray(StandardCharsets.US_ASCII)
                     val txCmd = connection.bulkTransfer(epOut, cmdBytes, cmdBytes.size, 4000)
                     if (txCmd < 0) {
-                        onLog("Failed to send '$downloadCmd' ($txCmd).", LogLevel.FAIL)
+                        onLog("Failed to initiate transfer ($txCmd).", LogLevel.FAIL)
                         return
                     }
-                    onLog("TX -> $downloadCmd (${FlashFileProcessor.formatSize(transferSize)})", LogLevel.USB)
+                    if (verboseWireLogs) {
+                        onLog("TX -> $downloadCmd (${FlashFileProcessor.formatSize(transferSize)})", LogLevel.USB)
+                    }
 
                     val respBuf = ByteArray(64)
                     val rx = connection.bulkTransfer(epIn, respBuf, respBuf.size, 4000)
                     if (rx <= 0) {
-                        onLog("No response from bootloader to '$downloadCmd'.", LogLevel.FAIL)
+                        onLog("No response from bootloader.", LogLevel.FAIL)
                         return
                     }
                     val reply = String(respBuf, 0, rx, StandardCharsets.US_ASCII).trim()
-                    onLog("RX <- $reply", LogLevel.USB)
+                    if (verboseWireLogs) {
+                        onLog("RX <- $reply", LogLevel.USB)
+                    }
                     if (!reply.startsWith("DATA")) {
-                        onLog("Bootloader rejected download request: $reply", LogLevel.FAIL)
+                        onLog("Bootloader rejected transfer: $reply", LogLevel.FAIL)
                         return
                     }
 
@@ -325,21 +333,21 @@ class UsbPortController(private val context: Context) {
                                 chunk[3] == '0'.code.toByte()
                             ) {
                                 chunk[123] = (chunk[123].toInt() or 0x03).toByte()
-                                onLog("AVB0 Header detected: patched flags byte @offset 123 (disable-verity | disable-verification).", LogLevel.OKAY)
+                                onLog("AVB0 verity flags patched.", LogLevel.OKAY)
                             }
                         }
 
                         val written = connection.bulkTransfer(epOut, chunk, r, 6000)
                         if (written < 0) {
-                            onLog("Bulk data write failed at offset $sentTotal ($written).", LogLevel.FAIL)
+                            onLog("USB write failed ($written).", LogLevel.FAIL)
                             return
                         }
                         sentTotal += written
                         onProgress((sentTotal.toFloat() / transferSize.toFloat()).coerceIn(0f, 1f))
                     }
 
-                    onLog("Transferred $sentTotal / $transferSize bytes to bootloader RAM.", LogLevel.OKAY)
-                    if (!readFastbootResponses(connection, epIn, 8000, onLog)) {
+                    onLog("Sent ${FlashFileProcessor.formatSize(sentTotal)} to device.", LogLevel.OKAY)
+                    if (!readFastbootResponses(connection, epIn, 8000, verboseWireLogs, onLog)) {
                         return
                     }
 
@@ -347,13 +355,15 @@ class UsbPortController(private val context: Context) {
                     val flashBytes = flashCmd.toByteArray(StandardCharsets.US_ASCII)
                     val txFlash = connection.bulkTransfer(epOut, flashBytes, flashBytes.size, 4000)
                     if (txFlash < 0) {
-                        onLog("Failed to send '$flashCmd' ($txFlash).", LogLevel.FAIL)
+                        onLog("Flash transfer failed ($txFlash).", LogLevel.FAIL)
                         return
                     }
-                    onLog("TX -> $flashCmd", LogLevel.USB)
-                    readFastbootResponses(connection, epIn, 25000, onLog)
+                    if (verboseWireLogs) {
+                        onLog("TX -> $flashCmd", LogLevel.USB)
+                    }
+                    readFastbootResponses(connection, epIn, 25000, verboseWireLogs, onLog)
                 }
-            } ?: onLog("Could not open ParcelFileDescriptor for selected file.", LogLevel.FAIL)
+            } ?: onLog("Could not open selected file.", LogLevel.FAIL)
         } catch (e: Exception) {
             onLog("Flash error: ${e.message}", LogLevel.FAIL)
         } finally {
@@ -372,31 +382,32 @@ class UsbPortController(private val context: Context) {
     fun executeAdbOverUsbOtg(
         deviceName: String,
         command: String,
+        verboseWireLogs: Boolean = false,
         onLog: (String, LogLevel) -> Unit
     ) {
         val manager = usbManager ?: return
         val device = manager.deviceList[deviceName] ?: run {
-            onLog("No USB OTG device at $deviceName.", LogLevel.FAIL)
+            onLog("No USB OTG device connected.", LogLevel.FAIL)
             return
         }
         if (!manager.hasPermission(device)) {
-            onLog("USB permission required for $deviceName. Requesting permission...", LogLevel.WARN)
+            onLog("USB permission required. Please allow access.", LogLevel.WARN)
             requestPermission(deviceName)
             return
         }
         val triple = findBulkEndpoints(device, preferProtocol = 0x01) ?: run {
-            onLog("No Bulk endpoints on $deviceName.", LogLevel.FAIL)
+            onLog("No Bulk endpoints found.", LogLevel.FAIL)
             return
         }
         val (iface, epIn, epOut) = triple
         val connection = manager.openDevice(device) ?: run {
-            onLog("Failed to open USB connection for $deviceName.", LogLevel.FAIL)
+            onLog("Failed to open USB connection.", LogLevel.FAIL)
             return
         }
 
         try {
             if (!connection.claimInterface(iface, true)) {
-                onLog("Cannot claim ADB USB interface #${iface.id}.", LogLevel.FAIL)
+                onLog("Cannot claim ADB interface.", LogLevel.FAIL)
                 return
             }
 
@@ -404,7 +415,9 @@ class UsbPortController(private val context: Context) {
             val banner = "host::features=shell_v2,cmd,stat_v2,abb_exec,fastbootd\u0000"
                 .toByteArray(StandardCharsets.UTF_8)
             sendAdbPacket(connection, epOut, A_CNXN, A_VERSION, MAX_ADB_DATA, banner)
-            onLog("ADB USB TX -> CNXN (${device.productName})", LogLevel.USB)
+            if (verboseWireLogs) {
+                onLog("ADB USB TX -> CNXN (${device.productName})", LogLevel.USB)
+            }
 
             // Step 2: Handle A_AUTH or A_CNXN response
             var connected = false
@@ -427,7 +440,9 @@ class UsbPortController(private val context: Context) {
                     A_CNXN -> {
                         val remoteBanner = String(pkt.payload, StandardCharsets.UTF_8)
                             .trim { it <= ' ' || it == '\u0000' }
-                        onLog("ADB USB Connected: $remoteBanner", LogLevel.OKAY)
+                        if (verboseWireLogs) {
+                            onLog("ADB USB Connected: $remoteBanner", LogLevel.OKAY)
+                        }
                         connected = true
                         break
                     }
@@ -437,13 +452,15 @@ class UsbPortController(private val context: Context) {
                                 val sig = signAdbToken(keyPair, pkt.payload)
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_SIGNATURE, 0, sig)
                                 sentSignature = true
-                                onLog("ADB USB TX -> AUTH_SIGNATURE (2048-bit RSA)", LogLevel.USB)
+                                if (verboseWireLogs) {
+                                    onLog("ADB USB TX -> AUTH_SIGNATURE (2048-bit RSA)", LogLevel.USB)
+                                }
                             } else if (!sentPublicKey) {
                                 val pubKeyBytes = encodeAdbPublicKey(keyPair)
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_RSAPUBLICKEY, 0, pubKeyBytes)
                                 sentPublicKey = true
                                 onLog(
-                                    "ADB USB TX -> AUTH_RSAPUBLICKEY. Please tap 'Allow USB Debugging' on target phone!",
+                                    "Tap 'Allow USB Debugging' on target phone.",
                                     LogLevel.WARN
                                 )
                             }
@@ -453,7 +470,7 @@ class UsbPortController(private val context: Context) {
             }
 
             if (!connected) {
-                onLog("ADB USB handshake waiting for target authorization or device not in ADB mode.", LogLevel.WARN)
+                onLog("Waiting for USB Debugging authorization on phone.", LogLevel.WARN)
                 return
             }
 
@@ -524,7 +541,9 @@ class UsbPortController(private val context: Context) {
                 0,
                 serviceDest.toByteArray(StandardCharsets.UTF_8)
             )
-            onLog("ADB USB TX -> OPEN '${serviceDest.trimEnd('\u0000')}'", LogLevel.USB)
+            if (verboseWireLogs) {
+                onLog("ADB USB TX -> OPEN '${serviceDest.trimEnd('\u0000')}'", LogLevel.USB)
+            }
 
             // Step 4: Read A_OKAY / A_WRTE / A_CLSE stream output
             var remoteId = 0
@@ -547,13 +566,15 @@ class UsbPortController(private val context: Context) {
                     }
                     A_CLSE -> {
                         sendAdbPacket(connection, epOut, A_CLSE, localId, remoteId, ByteArray(0))
-                        onLog("ADB stream closed (OKAY).", LogLevel.OKAY)
+                        if (verboseWireLogs) {
+                            onLog("ADB stream closed (OKAY).", LogLevel.OKAY)
+                        }
                         break
                     }
                 }
             }
             if (isRebootService && streamOpened) {
-                onLog("Reboot command accepted by target device.", LogLevel.OKAY)
+                onLog("Reboot command accepted.", LogLevel.OKAY)
             }
         } catch (e: Exception) {
             onLog("ADB USB error: ${e.message}", LogLevel.FAIL)
@@ -589,13 +610,11 @@ class UsbPortController(private val context: Context) {
                 }
             }
             val exitCode = process.waitFor()
-            if (exitCode == 0) {
-                onLog("Local Shell Exit 0 ($lineCount lines)", LogLevel.OKAY)
-            } else {
-                onLog("Local Shell Exit $exitCode (Requires target OTG device or root permission)", LogLevel.WARN)
+            if (exitCode != 0) {
+                onLog("Command failed (exit $exitCode) — connect target via USB OTG.", LogLevel.WARN)
             }
         } catch (e: Exception) {
-            onLog("Shell execution error: ${e.message}", LogLevel.FAIL)
+            onLog("Execution error: ${e.message}", LogLevel.FAIL)
         }
     }
 
@@ -603,6 +622,7 @@ class UsbPortController(private val context: Context) {
         connection: UsbDeviceConnection,
         epIn: UsbEndpoint,
         timeoutMs: Int,
+        verboseWireLogs: Boolean,
         onLog: (String, LogLevel) -> Unit
     ): Boolean {
         val buf = ByteArray(256)
@@ -611,7 +631,7 @@ class UsbPortController(private val context: Context) {
             polls++
             val rx = connection.bulkTransfer(epIn, buf, buf.size, timeoutMs)
             if (rx < 4) {
-                onLog("Fastboot USB read timeout ($rx).", LogLevel.WARN)
+                onLog("Fastboot response timeout.", LogLevel.WARN)
                 return false
             }
             val status = String(buf, 0, 4, StandardCharsets.US_ASCII)
@@ -621,18 +641,20 @@ class UsbPortController(private val context: Context) {
                 ""
             }
             when (status) {
-                "INFO" -> onLog("(bootloader) $body", LogLevel.INFO)
+                "INFO" -> onLog(body.ifEmpty { status }, LogLevel.INFO)
                 "TEXT" -> onLog(body, LogLevel.INFO)
                 "OKAY" -> {
                     onLog("OKAY ${if (body.isNotEmpty()) "[$body]" else ""}".trim(), LogLevel.OKAY)
                     return true
                 }
                 "FAIL" -> {
-                    onLog("FAILED (remote: '$body')", LogLevel.FAIL)
+                    onLog("FAILED: $body", LogLevel.FAIL)
                     return false
                 }
                 else -> {
-                    onLog("RX: $status$body", LogLevel.USB)
+                    if (verboseWireLogs) {
+                        onLog("RX: $status$body", LogLevel.USB)
+                    }
                     return true
                 }
             }

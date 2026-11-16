@@ -5,26 +5,99 @@ enum class ThemeMode {
     LIGHT
 }
 
+enum class ThemeDesign(
+    val displayName: String,
+    val subtitle: String
+) {
+    CYBER_NEON(
+        displayName = "Cyber Neon",
+        subtitle = "Electric Cyan & Indigo Glow"
+    ),
+    EMERALD_MATRIX(
+        displayName = "Emerald Matrix",
+        subtitle = "Phosphor Green Terminal Grid"
+    ),
+    CRIMSON_FORGE(
+        displayName = "Crimson Forge",
+        subtitle = "Volcanic Red & Amber Lab"
+    )
+}
+
+enum class AppFontSize(
+    val displayName: String,
+    val scaleFactor: Float,
+    val consoleSp: Float
+) {
+    COMPACT(
+        displayName = "Small",
+        scaleFactor = 0.90f,
+        consoleSp = 11.0f
+    ),
+    MEDIUM(
+        displayName = "Medium",
+        scaleFactor = 1.00f,
+        consoleSp = 12.5f
+    ),
+    LARGE(
+        displayName = "Large",
+        scaleFactor = 1.15f,
+        consoleSp = 14.5f
+    )
+}
+
 enum class ToolScreenMode(
     val badgeTitle: String,
     val headerTitle: String
 ) {
-    FASTBOOT_ONECLICK(
-        badgeTitle = "[FB] Fastboot",
-        headerTitle = "Fastboot Mode (Bootloader One-Click)"
+    ADB_INFO(
+        badgeTitle = "[ADB] Info",
+        headerTitle = "ADB Mode — Device & System Info"
+    ),
+    ADB_UNLOCK(
+        badgeTitle = "[ADB] Unlock",
+        headerTitle = "ADB Mode — FRP & Unlock Helpers"
+    ),
+    ADB_SERVICE(
+        badgeTitle = "[ADB] Service",
+        headerTitle = "ADB Mode — Debloat & System Service"
     ),
     FASTBOOT_FLASH(
-        badgeTitle = "[FB] Flash Tool",
+        badgeTitle = "[FB] Flash",
         headerTitle = "Fastboot Flash (.img / .bat / UPDATE.APP)"
     ),
-    ADB_ONECLICK(
-        badgeTitle = "[ADB] Service",
-        headerTitle = "ADB Mode (System & Package One-Click)"
+    FASTBOOT_INFO(
+        badgeTitle = "[FB] Info",
+        headerTitle = "Fastboot Mode — Bootloader & OEM Info"
+    ),
+    FASTBOOT_SERVICE(
+        badgeTitle = "[FB] Service",
+        headerTitle = "Fastboot Mode — Wipe, Slots & Partitions"
+    ),
+    FASTBOOT_UNLOCK(
+        badgeTitle = "[FB] Unlock",
+        headerTitle = "Fastboot Mode — Bootloader & FRP Unlock"
     ),
     CMD_TERMINAL(
         badgeTitle = "[CMD] Terminal",
         headerTitle = "Dedicated Command Shell Terminal"
-    )
+    ),
+    SETTINGS(
+        badgeTitle = "Setting",
+        headerTitle = "App Settings & Theme Studio"
+    ),
+    ABOUT(
+        badgeTitle = "About",
+        headerTitle = "About & Command Reference"
+    );
+
+    val isAdbSection: Boolean
+        get() = this == ADB_INFO || this == ADB_UNLOCK || this == ADB_SERVICE
+
+    val isFastbootSection: Boolean
+        get() = this == FASTBOOT_FLASH ||
+            this == FASTBOOT_INFO ||
+            this == FASTBOOT_SERVICE ||
+            this == FASTBOOT_UNLOCK
 }
 
 enum class ServiceBrand(val displayName: String, val shortTag: String) {
@@ -40,14 +113,9 @@ enum class ServiceBrand(val displayName: String, val shortTag: String) {
 }
 
 enum class ActionGroup(val displayName: String) {
-    ALL("All Actions"),
-    BRAND_OEM("Brand OEM Specific"),
-    INFO_GETVAR("Read Info"),
-    UNLOCK_LOCK("Bootloader Unlock / Lock"),
-    DYNAMIC_SLOT("Dynamic Partition & Slot A/B"),
-    WIPE_ERASE("Wipe Data & Erase"),
-    REBOOT_MODES("Reboot Modes"),
-    ADB_SYSTEM("ADB System & Debloat")
+    INFO("Info"),
+    UNLOCK("Unlock"),
+    SERVICE("Service")
 }
 
 data class ServiceActionItem(

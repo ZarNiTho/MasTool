@@ -8,7 +8,10 @@ import com.example.data.CommandRepository
 import com.example.data.FlashFileProcessor
 import com.example.data.UsbPortController
 import com.example.model.ActionGroup
+import com.example.model.AppFontSize
 import com.example.model.ServiceBrand
+import com.example.model.ThemeDesign
+import com.example.model.ThemeMode
 import com.example.model.ToolScreenMode
 import com.example.ui.ServiceViewModel
 import org.junit.Assert.assertArrayEquals
@@ -36,12 +39,19 @@ class ExampleRobolectricTest {
         val appName = context.getString(R.string.app_name)
         assertEquals("FastDeck OTG", appName)
 
-        assertTrue(CommandRepository.allActions.size >= 65)
+        assertTrue(CommandRepository.allActions.size >= 70)
         assertTrue(
             CommandRepository.allActions.all {
                 it.command.isNotBlank() && it.title.isNotBlank() && it.description.isNotBlank()
             }
         )
+        // Verify all 6 ADB/Fastboot service categories have commands
+        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.INFO })
+        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.UNLOCK })
+        assertTrue(CommandRepository.allActions.any { it.isAdb && it.group == ActionGroup.SERVICE })
+        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.INFO })
+        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.UNLOCK })
+        assertTrue(CommandRepository.allActions.any { !it.isAdb && it.group == ActionGroup.SERVICE })
     }
 
     @Test
@@ -54,40 +64,57 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `verify viewModel strict mode isolation and brand filtering`() {
+    fun `verify viewModel strict drawer mode isolation and brand filtering`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = ServiceViewModel(app)
 
-        // Fastboot tab must contain ONLY Fastboot actions (!isAdb)
-        vm.navigateToMode(ToolScreenMode.FASTBOOT_ONECLICK)
+        vm.navigateToMode(ToolScreenMode.FASTBOOT_INFO)
         vm.setBrand(ServiceBrand.XIAOMI)
-        vm.setActionGroup(ActionGroup.BRAND_OEM)
-        val xiaomiFbActions = vm.getAvailableActions()
-        assertTrue(xiaomiFbActions.isNotEmpty())
-        assertTrue(xiaomiFbActions.all { it.brand == ServiceBrand.XIAOMI && !it.isAdb })
+        val xiaomiFbInfo = vm.getAvailableActions()
+        assertTrue(xiaomiFbInfo.isNotEmpty())
+        assertTrue(xiaomiFbInfo.all { it.brand == ServiceBrand.XIAOMI && !it.isAdb && it.group == ActionGroup.INFO })
 
-        // ADB tab must contain ONLY ADB actions (isAdb)
-        vm.navigateToMode(ToolScreenMode.ADB_ONECLICK)
-        vm.setBrand(ServiceBrand.XIAOMI)
-        val xiaomiAdbActions = vm.getAvailableActions()
-        assertTrue(xiaomiAdbActions.isNotEmpty())
-        assertTrue(xiaomiAdbActions.all { it.brand == ServiceBrand.XIAOMI && it.isAdb })
+        vm.navigateToMode(ToolScreenMode.FASTBOOT_UNLOCK)
+        vm.setBrand(ServiceBrand.VIVO)
+        val vivoFbUnlock = vm.getAvailableActions()
+        assertTrue(vivoFbUnlock.isNotEmpty())
+        assertTrue(vivoFbUnlock.all { it.brand == ServiceBrand.VIVO && !it.isAdb && it.group == ActionGroup.UNLOCK })
 
-        vm.setBrand(ServiceBrand.HUAWEI)
-        val huaweiAdbActions = vm.getAvailableActions()
-        assertTrue(huaweiAdbActions.isNotEmpty())
-        assertTrue(huaweiAdbActions.all { it.brand == ServiceBrand.HUAWEI && it.isAdb })
+        vm.navigateToMode(ToolScreenMode.ADB_INFO)
+        vm.setBrand(ServiceBrand.SAMSUNG)
+        val samsungAdbInfo = vm.getAvailableActions()
+        assertTrue(samsungAdbInfo.isNotEmpty())
+        assertTrue(samsungAdbInfo.all { it.brand == ServiceBrand.SAMSUNG && it.isAdb && it.group == ActionGroup.INFO })
+
+        vm.navigateToMode(ToolScreenMode.ADB_UNLOCK)
+        vm.setBrand(ServiceBrand.UNIVERSAL)
+        val uniAdbUnlock = vm.getAvailableActions()
+        assertTrue(uniAdbUnlock.isNotEmpty())
+        assertTrue(uniAdbUnlock.all { it.brand == ServiceBrand.UNIVERSAL && it.isAdb && it.group == ActionGroup.UNLOCK })
+
+        vm.navigateToMode(ToolScreenMode.ADB_SERVICE)
+        vm.setBrand(ServiceBrand.UNIVERSAL)
+        val uniAdbService = vm.getAvailableActions()
+        assertTrue(uniAdbService.isNotEmpty())
+        assertTrue(uniAdbService.all { it.brand == ServiceBrand.UNIVERSAL && it.isAdb && it.group == ActionGroup.SERVICE })
+
+        vm.navigateToMode(ToolScreenMode.SETTINGS)
+        assertEquals(ToolScreenMode.SETTINGS, vm.uiState.value.screenMode)
+        vm.navigateToMode(ToolScreenMode.ABOUT)
+        assertEquals(ToolScreenMode.ABOUT, vm.uiState.value.screenMode)
     }
 
     @Test
-    fun `verify isolated cli terminal buffer starts empty without console logs`() {
+    fun `verify isolated cli terminal buffer and clean console logs without noise`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = ServiceViewModel(app)
 
+        // Switching drawer modes or brands must not spam the Live Log Console
+        vm.navigateToMode(ToolScreenMode.ADB_INFO)
+        vm.setBrand(ServiceBrand.XIAOMI)
         vm.navigateToMode(ToolScreenMode.CMD_TERMINAL)
-        // Terminal must start completely empty (no INIT / NAV / USB logs)
         assertTrue(vm.uiState.value.terminalLines.isEmpty())
-        assertTrue(vm.uiState.value.consoleLogs.isNotEmpty())
+        assertTrue(vm.uiState.value.consoleLogs.isEmpty())
 
         vm.submitTerminalCommand("help")
         assertTrue(vm.uiState.value.terminalLines.size >= 2)
@@ -98,15 +125,50 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `verify light and dark theme toggle updates state cleanly`() {
+    fun `verify console logs never expose raw CLI command strings on action execution`() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val vm = ServiceViewModel(app)
 
-        assertEquals(com.example.model.ThemeMode.DARK, vm.uiState.value.themeMode)
-        vm.toggleTheme()
-        assertEquals(com.example.model.ThemeMode.LIGHT, vm.uiState.value.themeMode)
-        vm.toggleTheme()
-        assertEquals(com.example.model.ThemeMode.DARK, vm.uiState.value.themeMode)
+        vm.navigateToMode(ToolScreenMode.FASTBOOT_INFO)
+        vm.setBrand(ServiceBrand.UNIVERSAL)
+        val firstAction = vm.getAvailableActions().first()
+        vm.setSelectedAction(firstAction)
+        vm.onStartPressed()
+
+        // Allow coroutine to log start/fail cleanly
+        Thread.sleep(150)
+        val allMsgs = vm.uiState.value.consoleLogs.joinToString("\n") { it.message }
+        assertTrue(allMsgs.contains(firstAction.title))
+        assertTrue(!allMsgs.contains(firstAction.command))
+    }
+
+    @Test
+    fun `verify theme mode, 3 theme designs, 3 font sizes, and sound toggle update cleanly`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = ServiceViewModel(app)
+
+        vm.setThemeMode(ThemeMode.LIGHT)
+        assertEquals(ThemeMode.LIGHT, vm.uiState.value.themeMode)
+        vm.setThemeMode(ThemeMode.DARK)
+        assertEquals(ThemeMode.DARK, vm.uiState.value.themeMode)
+
+        vm.setThemeDesign(ThemeDesign.EMERALD_MATRIX)
+        assertEquals(ThemeDesign.EMERALD_MATRIX, vm.uiState.value.themeDesign)
+        vm.setThemeDesign(ThemeDesign.CRIMSON_FORGE)
+        assertEquals(ThemeDesign.CRIMSON_FORGE, vm.uiState.value.themeDesign)
+        vm.setThemeDesign(ThemeDesign.CYBER_NEON)
+        assertEquals(ThemeDesign.CYBER_NEON, vm.uiState.value.themeDesign)
+
+        vm.setFontSize(AppFontSize.COMPACT)
+        assertEquals(AppFontSize.COMPACT, vm.uiState.value.fontSize)
+        vm.setFontSize(AppFontSize.LARGE)
+        assertEquals(AppFontSize.LARGE, vm.uiState.value.fontSize)
+
+        assertTrue(vm.uiState.value.soundEnabled)
+        vm.setSoundEnabled(false)
+        assertTrue(!vm.uiState.value.soundEnabled)
+        vm.setSoundEnabled(true)
+        assertTrue(vm.uiState.value.soundEnabled)
     }
 
     @Test
@@ -125,7 +187,7 @@ class ExampleRobolectricTest {
         assertEquals(524, decoded.size)
 
         val bb = ByteBuffer.wrap(decoded).order(ByteOrder.LITTLE_ENDIAN)
-        assertEquals(64, bb.int) // modulus_size_words
+        assertEquals(64, bb.int)
         val n0inv = bb.int.toLong() and 0xFFFFFFFFL
 
         val nBytesLE = ByteArray(256).also { bb.get(it) }
@@ -144,7 +206,6 @@ class ExampleRobolectricTest {
         val prodMod = (BigInteger.valueOf(n0).multiply(BigInteger.valueOf(n0inv))).mod(r32)
         assertEquals(r32.subtract(BigInteger.ONE), prodMod)
 
-        // Verify signature against public key (adbd RSA_verify equivalence)
         val token = ByteArray(20) { (it + 7).toByte() }
         val sig = UsbPortController.signAdbTokenPayload(kp.private, token)
         assertEquals(256, sig.size)

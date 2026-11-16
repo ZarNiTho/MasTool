@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -52,7 +53,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -67,16 +67,15 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.data.CommandRepository
-import com.example.model.ActionGroup
 import com.example.model.ConsoleLogEntry
 import com.example.model.LogLevel
 import com.example.model.ServiceActionItem
 import com.example.model.ServiceBrand
-import com.example.model.ThemeMode
 import com.example.model.ToolScreenMode
 import com.example.ui.ServiceUiState
+import com.example.ui.theme.LocalAppPalette
+import com.example.ui.theme.LocalFontConfig
 import java.util.Locale
 
 @Composable
@@ -84,7 +83,6 @@ fun WorkbenchScreen(
     uiState: ServiceUiState,
     availableActions: List<ServiceActionItem>,
     onSelectBrand: (ServiceBrand) -> Unit,
-    onSelectActionGroup: (ActionGroup) -> Unit,
     onSelectAction: (ServiceActionItem) -> Unit,
     onSelectPartition: (String) -> Unit,
     onToggleVerity: () -> Unit,
@@ -95,71 +93,76 @@ fun WorkbenchScreen(
     onPickFile: () -> Unit,
     onScanPorts: () -> Unit,
     onStartPressed: () -> Unit,
-    onExecuteCommand: (String) -> Unit,
-    onRawCommandChange: (String) -> Unit,
     onClearLogs: () -> Unit,
-    onDismissAbout: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val isDark = uiState.themeMode == ThemeMode.DARK
-    val screenBg = if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9)
-    val cardBg = if (isDark) Color(0xFF111827) else Color(0xFFFFFFFF)
-    val cardBorder = if (isDark) Color(0xFF1F2937) else Color(0xFFCBD5E1)
-    val statusStripBg = if (isDark) Color(0xFF0B111E) else Color(0xFFE2E8F0)
-    val statusStripText = if (isDark) Color(0xFF94A3B8) else Color(0xFF334155)
-    val consoleBg = if (isDark) Color(0xFF090D16) else Color(0xFFFFFFFF)
+    val palette = LocalAppPalette.current
+    val fontConfig = LocalFontConfig.current
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(screenBg)
+            .background(palette.screenBg)
     ) {
-        // COMPACT TOP SELECTION & START DECK (Clean, uncluttered, auto-fitting)
+        // COMPACT TOP SELECTION & START DECK (Styled with active ThemeDesign accent & glow border)
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight()
-                .padding(horizontal = 8.dp, vertical = 5.dp)
-                .border(1.dp, cardBorder, RoundedCornerShape(12.dp))
+                .padding(horizontal = 8.dp, vertical = 6.dp)
+                .border(1.dp, palette.panelBorderBrush, RoundedCornerShape(12.dp))
                 .testTag("top_options_panel"),
             shape = RoundedCornerShape(12.dp),
-            color = cardBg
+            color = palette.cardBg
         ) {
-            when (uiState.screenMode) {
-                ToolScreenMode.FASTBOOT_ONECLICK,
-                ToolScreenMode.ADB_ONECLICK -> DropdownActionStartPanel(
-                    uiState = uiState,
-                    isDark = isDark,
-                    availableActions = availableActions,
-                    onSelectBrand = onSelectBrand,
-                    onSelectAction = onSelectAction,
-                    onScanPorts = onScanPorts,
-                    onStartPressed = onStartPressed
+            Column {
+                // Signature ThemeDesign top glow accent stripe
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .background(palette.cardAccentBrush)
                 )
-                ToolScreenMode.FASTBOOT_FLASH -> FlashDropdownStartPanel(
-                    uiState = uiState,
-                    isDark = isDark,
-                    onSelectBrand = onSelectBrand,
-                    onSelectPartition = onSelectPartition,
-                    onToggleVerity = onToggleVerity,
-                    onToggleAutoReboot = onToggleAutoReboot,
-                    onToggleChecksum = onToggleChecksum,
-                    onToggleFastbootd = onToggleFastbootd,
-                    onToggleStep = onToggleStep,
-                    onPickFile = onPickFile,
-                    onStartPressed = onStartPressed
-                )
-                ToolScreenMode.CMD_TERMINAL -> Unit
+                when (uiState.screenMode) {
+                    ToolScreenMode.ADB_INFO,
+                    ToolScreenMode.ADB_UNLOCK,
+                    ToolScreenMode.ADB_SERVICE,
+                    ToolScreenMode.FASTBOOT_INFO,
+                    ToolScreenMode.FASTBOOT_SERVICE,
+                    ToolScreenMode.FASTBOOT_UNLOCK -> DropdownActionStartPanel(
+                        uiState = uiState,
+                        availableActions = availableActions,
+                        onSelectBrand = onSelectBrand,
+                        onSelectAction = onSelectAction,
+                        onScanPorts = onScanPorts,
+                        onStartPressed = onStartPressed
+                    )
+                    ToolScreenMode.FASTBOOT_FLASH -> FlashDropdownStartPanel(
+                        uiState = uiState,
+                        onSelectBrand = onSelectBrand,
+                        onSelectPartition = onSelectPartition,
+                        onToggleVerity = onToggleVerity,
+                        onToggleAutoReboot = onToggleAutoReboot,
+                        onToggleChecksum = onToggleChecksum,
+                        onToggleFastbootd = onToggleFastbootd,
+                        onToggleStep = onToggleStep,
+                        onPickFile = onPickFile,
+                        onStartPressed = onStartPressed
+                    )
+                    ToolScreenMode.CMD_TERMINAL,
+                    ToolScreenMode.SETTINGS,
+                    ToolScreenMode.ABOUT -> Unit
+                }
             }
         }
 
         // MIDDLE STATUS & PROGRESS STRIP
         Surface(
             modifier = Modifier.fillMaxWidth(),
-            color = statusStripBg
+            color = palette.statusStripBg
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
-                HorizontalDivider(color = cardBorder)
+                HorizontalDivider(color = palette.divider)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -171,7 +174,7 @@ fun WorkbenchScreen(
                         text = uiState.statusBarText,
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = statusStripText,
+                        color = palette.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
@@ -181,17 +184,20 @@ fun WorkbenchScreen(
                         text = String.format(Locale.US, "%.1f%%", uiState.progressPercent),
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = statusStripText
+                        color = palette.accentPrimary,
+                        fontWeight = FontWeight.Bold
                     )
                 }
                 if (uiState.isBusy) {
                     LinearProgressIndicator(
+                        color = palette.accentPrimary,
+                        trackColor = palette.cardBorder,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(2.dp)
+                            .height(2.5.dp)
                     )
                 } else {
-                    HorizontalDivider(color = cardBorder)
+                    HorizontalDivider(color = palette.divider)
                 }
             }
         }
@@ -199,8 +205,7 @@ fun WorkbenchScreen(
         // EXPANDED BOTTOM LIVE LOG CONSOLE
         LiveLogConsolePanel(
             uiState = uiState,
-            isDark = isDark,
-            consoleBg = consoleBg,
+            consoleFontSp = fontConfig.consoleSp,
             onClearLogs = onClearLogs,
             modifier = Modifier
                 .fillMaxWidth()
@@ -209,27 +214,18 @@ fun WorkbenchScreen(
     }
 }
 
-/**
- * Clean One-Click Selector (Fastboot Tab has ONLY Fastboot actions; ADB Tab has ONLY ADB actions).
- */
 @Composable
 private fun DropdownActionStartPanel(
     uiState: ServiceUiState,
-    isDark: Boolean,
     availableActions: List<ServiceActionItem>,
     onSelectBrand: (ServiceBrand) -> Unit,
     onSelectAction: (ServiceActionItem) -> Unit,
     onScanPorts: () -> Unit,
     onStartPressed: () -> Unit
 ) {
+    val palette = LocalAppPalette.current
     var brandExpanded by remember { mutableStateOf(false) }
     var actionExpanded by remember { mutableStateOf(false) }
-
-    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
-    val actionHighlightText = if (isDark) Color(0xFFFACC15) else Color(0xFF0369A1)
-    val scanBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
-    val scanBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
-    val scanIconTint = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
     Column(
         modifier = Modifier
@@ -237,12 +233,10 @@ private fun DropdownActionStartPanel(
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Row 1: Brand Dropdown
         Box(modifier = Modifier.fillMaxWidth()) {
             SelectorDropdownBox(
                 text = "Brand: ${uiState.selectedBrand.displayName}",
-                textColor = primaryText,
-                isDark = isDark,
+                textColor = palette.textPrimary,
                 onClick = { brandExpanded = true },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -269,12 +263,10 @@ private fun DropdownActionStartPanel(
             }
         }
 
-        // Row 2: Clean Single-Line Action Dropdown
         Box(modifier = Modifier.fillMaxWidth()) {
             SelectorDropdownBox(
                 text = uiState.selectedAction.title,
-                textColor = actionHighlightText,
-                isDark = isDark,
+                textColor = palette.actionHighlight,
                 onClick = { actionExpanded = true },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -291,7 +283,6 @@ private fun DropdownActionStartPanel(
                             Text(
                                 text = item.title,
                                 fontWeight = if (item.id == uiState.selectedAction.id) FontWeight.Bold else FontWeight.Medium,
-                                fontSize = 13.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -305,7 +296,6 @@ private fun DropdownActionStartPanel(
             }
         }
 
-        // Row 3: Scan OTG + Single Primary START Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -313,11 +303,11 @@ private fun DropdownActionStartPanel(
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = scanBg,
-                border = BorderStroke(1.dp, scanBorder),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.cardBorder),
                 modifier = Modifier
                     .weight(0.85f)
-                    .height(38.dp)
+                    .height(40.dp)
                     .clickable { onScanPorts() }
                     .testTag("scan_ports_button")
             ) {
@@ -331,14 +321,14 @@ private fun DropdownActionStartPanel(
                     Icon(
                         imageVector = Icons.Default.Refresh,
                         contentDescription = "Scan USB",
-                        tint = scanIconTint,
-                        modifier = Modifier.size(15.dp)
+                        tint = palette.accentPrimary,
+                        modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
                         text = "Scan OTG",
                         style = MaterialTheme.typography.labelMedium,
-                        color = primaryText,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -349,24 +339,28 @@ private fun DropdownActionStartPanel(
             Button(
                 onClick = onStartPressed,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF16A34A),
+                    containerColor = if (uiState.isBusy) Color(0xFFDC2626) else palette.startButtonBg,
                     contentColor = Color.White
                 ),
                 shape = RoundedCornerShape(8.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
                 modifier = Modifier
                     .weight(1.45f)
-                    .height(38.dp)
+                    .height(40.dp)
                     .testTag("start_action_button")
             ) {
                 Icon(
-                    imageVector = Icons.Default.PlayArrow,
-                    contentDescription = "Start",
+                    imageVector = if (uiState.isBusy) Icons.Default.Stop else Icons.Default.PlayArrow,
+                    contentDescription = if (uiState.isBusy) "Stop" else "Start",
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(modifier = Modifier.width(5.dp))
                 Text(
-                    text = "START (${uiState.selectedBrand.shortTag.uppercase(Locale.US)})",
+                    text = if (uiState.isBusy) {
+                        "STOP"
+                    } else {
+                        "START (${uiState.selectedBrand.shortTag.uppercase(Locale.US)})"
+                    },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
@@ -377,13 +371,9 @@ private fun DropdownActionStartPanel(
     }
 }
 
-/**
- * Flash Tool Panel with Brand Dropdown, Partition Dropdown, Storage File Loader, and Single START Button
- */
 @Composable
 private fun FlashDropdownStartPanel(
     uiState: ServiceUiState,
-    isDark: Boolean,
     onSelectBrand: (ServiceBrand) -> Unit,
     onSelectPartition: (String) -> Unit,
     onToggleVerity: () -> Unit,
@@ -394,6 +384,7 @@ private fun FlashDropdownStartPanel(
     onPickFile: () -> Unit,
     onStartPressed: () -> Unit
 ) {
+    val palette = LocalAppPalette.current
     var brandExpanded by remember { mutableStateOf(false) }
     var partitionExpanded by remember { mutableStateOf(false) }
     var showPartsDialog by remember { mutableStateOf(false) }
@@ -402,14 +393,12 @@ private fun FlashDropdownStartPanel(
     val totalParts = selectedFile?.steps?.size ?: 0
     val enabledParts = selectedFile?.steps?.count { it.enabled } ?: 0
 
-    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
-    val accentText = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
-    val boxBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
-    val boxBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
-
     if (showPartsDialog && selectedFile != null) {
         AlertDialog(
             onDismissRequest = { showPartsDialog = false },
+            containerColor = palette.cardBg,
+            titleContentColor = palette.textPrimary,
+            textContentColor = palette.textSecondary,
             title = {
                 Text(
                     text = "${selectedFile.fileName} ($enabledParts/$totalParts Parts)",
@@ -432,7 +421,7 @@ private fun FlashDropdownStartPanel(
                             Icon(
                                 imageVector = if (step.enabled) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                 contentDescription = null,
-                                tint = accentText,
+                                tint = palette.accentPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -440,6 +429,7 @@ private fun FlashDropdownStartPanel(
                                 text = step.targetPartition,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
+                                color = palette.textPrimary,
                                 modifier = Modifier.weight(1f)
                             )
                         }
@@ -448,7 +438,7 @@ private fun FlashDropdownStartPanel(
             },
             confirmButton = {
                 TextButton(onClick = { showPartsDialog = false }) {
-                    Text("Done")
+                    Text("Done", color = palette.accentPrimary)
                 }
             }
         )
@@ -460,7 +450,6 @@ private fun FlashDropdownStartPanel(
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        // Row 1: Brand Dropdown + Partition Dropdown
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -468,8 +457,7 @@ private fun FlashDropdownStartPanel(
             Box(modifier = Modifier.weight(1f)) {
                 SelectorDropdownBox(
                     text = "Brand: ${uiState.selectedBrand.shortTag}",
-                    textColor = primaryText,
-                    isDark = isDark,
+                    textColor = palette.textPrimary,
                     onClick = { brandExpanded = true },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -492,8 +480,7 @@ private fun FlashDropdownStartPanel(
             Box(modifier = Modifier.weight(1f)) {
                 SelectorDropdownBox(
                     text = uiState.selectedPartition,
-                    textColor = accentText,
-                    isDark = isDark,
+                    textColor = palette.accentPrimary,
                     onClick = { partitionExpanded = true },
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -515,7 +502,6 @@ private fun FlashDropdownStartPanel(
             }
         }
 
-        // Row 2: Load Flash File (.img / .bat / UPDATE.APP) + Parts Counter
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -523,11 +509,11 @@ private fun FlashDropdownStartPanel(
         ) {
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = boxBg,
-                border = BorderStroke(1.dp, boxBorder),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.cardBorder),
                 modifier = Modifier
                     .weight(1.4f)
-                    .height(36.dp)
+                    .height(38.dp)
                     .clickable { onPickFile() }
                     .testTag("pick_flash_file_button")
             ) {
@@ -540,14 +526,14 @@ private fun FlashDropdownStartPanel(
                     Icon(
                         imageVector = Icons.Default.Description,
                         contentDescription = null,
-                        tint = accentText,
+                        tint = palette.accentPrimary,
                         modifier = Modifier.size(15.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = selectedFile?.fileName ?: "Load .img / .bat / UPDATE.APP",
                         style = MaterialTheme.typography.labelSmall,
-                        color = primaryText,
+                        color = palette.textPrimary,
                         fontWeight = FontWeight.SemiBold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -557,11 +543,11 @@ private fun FlashDropdownStartPanel(
 
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = boxBg,
-                border = BorderStroke(1.dp, boxBorder),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.cardBorder),
                 modifier = Modifier
                     .weight(0.75f)
-                    .height(36.dp)
+                    .height(38.dp)
                     .clickable(enabled = totalParts > 0) { showPartsDialog = true }
                     .testTag("parts_count_button")
             ) {
@@ -572,7 +558,7 @@ private fun FlashDropdownStartPanel(
                     Text(
                         text = "$enabledParts/$totalParts Parts",
                         style = MaterialTheme.typography.labelSmall,
-                        color = accentText,
+                        color = palette.accentPrimary,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1
                     )
@@ -580,7 +566,6 @@ private fun FlashDropdownStartPanel(
             }
         }
 
-        // Row 3: Option Toggle Pills + Single START FLASH Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -592,33 +577,33 @@ private fun FlashDropdownStartPanel(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                OptionTogglePill("Verity", uiState.disableVerity, isDark, onToggleVerity)
-                OptionTogglePill("Reboot", uiState.autoReboot, isDark, onToggleAutoReboot)
-                OptionTogglePill("Fastbootd", uiState.useFastbootd, isDark, onToggleFastbootd)
-                OptionTogglePill("CRC", uiState.checksumVerify, isDark, onToggleChecksum)
+                OptionTogglePill("Verity", uiState.disableVerity, onToggleVerity)
+                OptionTogglePill("Reboot", uiState.autoReboot, onToggleAutoReboot)
+                OptionTogglePill("Fastbootd", uiState.useFastbootd, onToggleFastbootd)
+                OptionTogglePill("CRC", uiState.checksumVerify, onToggleChecksum)
             }
 
             Button(
                 onClick = onStartPressed,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF16A34A),
+                    containerColor = if (uiState.isBusy) Color(0xFFDC2626) else palette.startButtonBg,
                     contentColor = Color.White
                 ),
                 shape = RoundedCornerShape(8.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
                 modifier = Modifier
                     .weight(0.95f)
-                    .height(36.dp)
+                    .height(38.dp)
                     .testTag("execute_flash_button")
             ) {
                 Icon(
-                    imageVector = Icons.Default.Bolt,
-                    contentDescription = null,
+                    imageVector = if (uiState.isBusy) Icons.Default.Stop else Icons.Default.Bolt,
+                    contentDescription = if (uiState.isBusy) "Stop Flash" else "Start Flash",
                     modifier = Modifier.size(15.dp)
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = "START FLASH",
+                    text = if (uiState.isBusy) "STOP" else "START FLASH",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
@@ -633,18 +618,15 @@ private fun FlashDropdownStartPanel(
 private fun SelectorDropdownBox(
     text: String,
     textColor: Color,
-    isDark: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val boxBg = if (isDark) Color(0xFF162032) else Color(0xFFF8FAFC)
-    val boxBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
-    val arrowTint = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
+    val palette = LocalAppPalette.current
 
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = boxBg,
-        border = BorderStroke(1.dp, boxBorder),
+        color = palette.cardAltBg,
+        border = BorderStroke(1.dp, palette.cardBorder),
         modifier = modifier
             .heightIn(min = 38.dp)
             .clickable { onClick() }
@@ -669,7 +651,7 @@ private fun SelectorDropdownBox(
             Icon(
                 imageVector = Icons.Default.ArrowDropDown,
                 contentDescription = null,
-                tint = arrowTint,
+                tint = palette.textSecondary,
                 modifier = Modifier.size(18.dp)
             )
         }
@@ -680,19 +662,16 @@ private fun SelectorDropdownBox(
 private fun OptionTogglePill(
     label: String,
     checked: Boolean,
-    isDark: Boolean,
     onClick: () -> Unit
 ) {
-    val uncheckedBg = if (isDark) Color(0xFF162032) else Color(0xFFF1F5F9)
-    val uncheckedBorder = if (isDark) Color(0xFF283548) else Color(0xFFCBD5E1)
-    val uncheckedFg = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+    val palette = LocalAppPalette.current
 
     Surface(
         shape = RoundedCornerShape(6.dp),
-        color = if (checked) Color(0xFF2563EB) else uncheckedBg,
+        color = if (checked) palette.accentPrimary else palette.cardAltBg,
         border = BorderStroke(
             1.dp,
-            if (checked) Color(0xFF3B82F6) else uncheckedBorder
+            if (checked) palette.accentPrimary else palette.cardBorder
         ),
         modifier = Modifier
             .height(34.dp)
@@ -705,40 +684,30 @@ private fun OptionTogglePill(
             Icon(
                 imageVector = if (checked) Icons.Default.Check else Icons.Default.Close,
                 contentDescription = null,
-                tint = if (checked) Color.White else uncheckedFg,
+                tint = if (checked) Color.White else palette.textMuted,
                 modifier = Modifier.size(13.dp)
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelSmall,
-                color = if (checked) Color.White else uncheckedFg,
+                color = if (checked) Color.White else palette.textSecondary,
                 fontWeight = FontWeight.Bold
             )
         }
     }
 }
 
-/**
- * Pure Live Log Console Panel (Bottom ~75% of screen).
- * Adapts cleanly to both Light and Dark themes.
- */
 @Composable
 private fun LiveLogConsolePanel(
     uiState: ServiceUiState,
-    isDark: Boolean,
-    consoleBg: Color,
+    consoleFontSp: androidx.compose.ui.unit.TextUnit,
     onClearLogs: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val palette = LocalAppPalette.current
     val clipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
-
-    val headerBg = if (isDark) Color(0xFF090D16) else Color(0xFFF8FAFC)
-    val dividerColor = if (isDark) Color(0xFF1E293B) else Color(0xFFE2E8F0)
-    val titleColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
-    val countColor = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
-    val iconTint = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
 
     LaunchedEffect(uiState.consoleLogs.size) {
         if (uiState.consoleLogs.isNotEmpty()) {
@@ -748,14 +717,13 @@ private fun LiveLogConsolePanel(
 
     Surface(
         modifier = modifier.testTag("bottom_terminal_panel"),
-        color = consoleBg
+        color = palette.consoleBg
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // LIVE LOG CONSOLE Header Bar
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(headerBg)
+                    .background(palette.headerBg)
                     .padding(horizontal = 12.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
@@ -765,14 +733,14 @@ private fun LiveLogConsolePanel(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF10B981))
+                            .background(palette.accentPrimary)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "LIVE LOG CONSOLE",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = titleColor,
+                        color = palette.accentPrimary,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.width(6.dp))
@@ -780,7 +748,7 @@ private fun LiveLogConsolePanel(
                         text = "(${uiState.consoleLogs.size})",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = countColor
+                        color = palette.textMuted
                     )
                 }
 
@@ -802,7 +770,7 @@ private fun LiveLogConsolePanel(
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
                             contentDescription = "Copy Console Logs",
-                            tint = iconTint,
+                            tint = palette.textSecondary,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -815,16 +783,15 @@ private fun LiveLogConsolePanel(
                         Icon(
                             imageVector = Icons.Default.Close,
                             contentDescription = "Clear Console Logs",
-                            tint = iconTint,
+                            tint = palette.textSecondary,
                             modifier = Modifier.size(15.dp)
                         )
                     }
                 }
             }
 
-            HorizontalDivider(color = dividerColor)
+            HorizontalDivider(color = palette.divider)
 
-            // Expanded Log Stream List
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -835,7 +802,10 @@ private fun LiveLogConsolePanel(
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 items(uiState.consoleLogs, key = { it.id }) { entry ->
-                    ConsoleTimestampRow(entry = entry, isDark = isDark)
+                    ConsoleTimestampRow(
+                        entry = entry,
+                        consoleFontSp = consoleFontSp
+                    )
                 }
             }
         }
@@ -845,25 +815,26 @@ private fun LiveLogConsolePanel(
 @Composable
 private fun ConsoleTimestampRow(
     entry: ConsoleLogEntry,
-    isDark: Boolean
+    consoleFontSp: androidx.compose.ui.unit.TextUnit
 ) {
-    val msgColor = if (isDark) {
+    val palette = LocalAppPalette.current
+    val msgColor = if (palette.isDark) {
         when (entry.level) {
-            LogLevel.INIT -> Color(0xFF10B981)
-            LogLevel.CMD -> Color(0xFF38BDF8)
+            LogLevel.INIT -> palette.accentPrimary
+            LogLevel.CMD -> palette.accentSecondary
             LogLevel.USB -> Color(0xFF60A5FA)
             LogLevel.OKAY -> Color(0xFF34D399)
-            LogLevel.INFO -> Color(0xFFE2E8F0)
+            LogLevel.INFO -> palette.textPrimary
             LogLevel.WARN -> Color(0xFFFACC15)
             LogLevel.FAIL -> Color(0xFFEF4444)
         }
     } else {
         when (entry.level) {
-            LogLevel.INIT -> Color(0xFF047857)
-            LogLevel.CMD -> Color(0xFF0369A1)
+            LogLevel.INIT -> palette.accentPrimary
+            LogLevel.CMD -> palette.accentSecondary
             LogLevel.USB -> Color(0xFF1D4ED8)
             LogLevel.OKAY -> Color(0xFF059669)
-            LogLevel.INFO -> Color(0xFF1E293B)
+            LogLevel.INFO -> palette.textPrimary
             LogLevel.WARN -> Color(0xFFB45309)
             LogLevel.FAIL -> Color(0xFFDC2626)
         }
@@ -875,191 +846,17 @@ private fun ConsoleTimestampRow(
     ) {
         Text(
             text = "[${entry.timestamp}]",
-            style = MaterialTheme.typography.labelMedium,
+            fontSize = consoleFontSp,
             fontFamily = FontFamily.Monospace,
-            color = Color(0xFF64748B)
+            color = palette.textMuted
         )
         Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = entry.message,
-            style = MaterialTheme.typography.labelMedium,
+            fontSize = consoleFontSp,
             fontFamily = FontFamily.Monospace,
             color = msgColor,
             modifier = Modifier.weight(1f)
         )
     }
-}
-
-/**
- * About & Command Reference Dialog:
- * Shows all Fastboot & ADB commands, their Brand, and their detailed explanations.
- */
-@Composable
-fun AboutCommandReferenceDialog(
-    isDark: Boolean = true,
-    onDismiss: () -> Unit
-) {
-    var filterTab by remember { mutableIntStateOf(0) } // 0 = Fastboot, 1 = ADB
-    val filteredActions = remember(filterTab) {
-        if (filterTab == 0) {
-            CommandRepository.allActions.filter { !it.isAdb }
-        } else {
-            CommandRepository.allActions.filter { it.isAdb }
-        }
-    }
-
-    val dialogBg = if (isDark) Color(0xFF0F172A) else Color(0xFFFFFFFF)
-    val titleColor = if (isDark) Color.White else Color(0xFF0F172A)
-    val subtitleColor = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-    val inactiveTabBg = if (isDark) Color(0xFF1E293B) else Color(0xFFF1F5F9)
-    val inactiveTabText = if (isDark) Color(0xFF94A3B8) else Color(0xFF475569)
-    val itemBg = if (isDark) Color(0xFF1E293B) else Color(0xFFF8FAFC)
-    val itemBorder = if (isDark) Color(0xFF334155) else Color(0xFFCBD5E1)
-    val itemTitleColor = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A)
-    val badgeBg = if (isDark) Color(0xFF0F172A) else Color(0xFFE0F2FE)
-    val badgeText = if (isDark) Color(0xFF38BDF8) else Color(0xFF0369A1)
-    val cmdTextColor = if (isDark) Color(0xFF34D399) else Color(0xFF047857)
-    val descColor = if (isDark) Color(0xFFCBD5E1) else Color(0xFF334155)
-    val closeColor = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = dialogBg,
-        titleContentColor = titleColor,
-        textContentColor = descColor,
-        title = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "About & Command Reference",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = titleColor
-                        )
-                        Text(
-                            text = "FastDeck OTG • Android 10–16 Service Guide",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = subtitleColor
-                        )
-                    }
-                }
-
-                // Filter Tabs: Fastboot Commands vs ADB Commands
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (filterTab == 0) Color(0xFF10B981) else inactiveTabBg,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(34.dp)
-                            .clickable { filterTab = 0 }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "Fastboot Commands",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = if (filterTab == 0) Color(0xFF052E16) else inactiveTabText
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (filterTab == 1) Color(0xFF38BDF8) else inactiveTabBg,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(34.dp)
-                            .clickable { filterTab = 1 }
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                text = "ADB Commands",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = if (filterTab == 1) Color(0xFF082F49) else inactiveTabText
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        text = {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(380.dp)
-                    .testTag("about_command_list"),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(filteredActions, key = { it.id }) { item ->
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = itemBg,
-                        border = BorderStroke(1.dp, itemBorder),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = item.title,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = itemTitleColor,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = badgeBg
-                                ) {
-                                    Text(
-                                        text = item.brand.shortTag,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = badgeText,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
-                            }
-                            Text(
-                                text = item.command,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = cmdTextColor
-                            )
-                            if (item.description.isNotEmpty()) {
-                                Text(
-                                    text = item.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontSize = 11.sp,
-                                    color = descColor
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = closeColor, fontWeight = FontWeight.Bold)
-            }
-        }
-    )
 }

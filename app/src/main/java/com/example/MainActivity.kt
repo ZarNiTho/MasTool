@@ -15,8 +15,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,15 +45,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeveloperBoard
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PermDeviceInformation
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.DrawerValue
@@ -93,9 +99,11 @@ import com.example.model.ThemeMode
 import com.example.model.ToolScreenMode
 import com.example.ui.ServiceUiState
 import com.example.ui.ServiceViewModel
-import com.example.ui.screens.AboutCommandReferenceDialog
+import com.example.ui.screens.AboutScreen
 import com.example.ui.screens.FullscreenCliTerminalScreen
+import com.example.ui.screens.SettingsScreen
 import com.example.ui.screens.WorkbenchScreen
+import com.example.ui.theme.LocalAppPalette
 import com.example.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 
@@ -123,7 +131,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            MyApplicationTheme(darkTheme = isDark) {
+            MyApplicationTheme(
+                themeMode = uiState.themeMode,
+                themeDesign = uiState.themeDesign,
+                fontSize = uiState.fontSize
+            ) {
                 FastDeckRootApp(
                     uiState = uiState,
                     viewModel = viewModel
@@ -147,9 +159,9 @@ fun FastDeckRootApp(
     viewModel: ServiceViewModel
 ) {
     val context = LocalContext.current
+    val palette = LocalAppPalette.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val isDark = uiState.themeMode == ThemeMode.DARK
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -166,7 +178,7 @@ fun FastDeckRootApp(
                     UsbManager.ACTION_USB_DEVICE_ATTACHED,
                     UsbManager.ACTION_USB_DEVICE_DETACHED,
                     UsbPortController.ACTION_USB_PERMISSION -> {
-                        viewModel.scanUsbPorts()
+                        viewModel.scanUsbPorts(userInitiated = false)
                     }
                 }
             }
@@ -189,40 +201,38 @@ fun FastDeckRootApp(
         }
     }
 
-    BackHandler(enabled = uiState.screenMode != ToolScreenMode.FASTBOOT_ONECLICK && !drawerState.isOpen) {
-        viewModel.navigateToMode(ToolScreenMode.FASTBOOT_ONECLICK)
+    BackHandler(enabled = drawerState.isOpen) {
+        scope.launch { drawerState.close() }
+    }
+
+    BackHandler(enabled = !drawerState.isOpen && uiState.screenMode != ToolScreenMode.FASTBOOT_INFO) {
+        viewModel.navigateToMode(ToolScreenMode.FASTBOOT_INFO)
     }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = if (isDark) Color(0xFF0B101B) else Color(0xFFF8FAFC),
-                drawerContentColor = if (isDark) Color.White else Color(0xFF0F172A),
+                drawerContainerColor = palette.drawerBg,
+                drawerContentColor = palette.textPrimary,
                 windowInsets = WindowInsets.safeDrawing,
                 modifier = Modifier
                     .fillMaxWidth(0.84f)
-                    .widthIn(max = 310.dp)
+                    .widthIn(max = 315.dp)
             ) {
-                AdbFastbootDrawerContent(
+                FastDeckDrawerContent(
                     uiState = uiState,
-                    isDark = isDark,
                     onSelectMode = { mode ->
                         viewModel.navigateToMode(mode)
                         scope.launch { drawerState.close() }
-                    },
-                    onOpenAbout = {
-                        scope.launch { drawerState.close() }
-                        viewModel.setShowAboutDialog(true)
-                    },
-                    onToggleTheme = { viewModel.toggleTheme() }
+                    }
                 )
             }
         }
     ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
-            containerColor = if (isDark) Color(0xFF060911) else Color(0xFFF1F5F9),
+            containerColor = palette.screenBg,
             contentWindowInsets = WindowInsets.safeDrawing,
             topBar = {
                 ToolHeaderTopBar(
@@ -231,15 +241,25 @@ fun FastDeckRootApp(
                         scope.launch { drawerState.open() }
                     },
                     onCycleMode = {
-                        val modes = ToolScreenMode.entries
-                        val next = modes[(modes.indexOf(uiState.screenMode) + 1) % modes.size]
+                        val cycleModes = listOf(
+                            ToolScreenMode.ADB_INFO,
+                            ToolScreenMode.ADB_UNLOCK,
+                            ToolScreenMode.ADB_SERVICE,
+                            ToolScreenMode.FASTBOOT_FLASH,
+                            ToolScreenMode.FASTBOOT_INFO,
+                            ToolScreenMode.FASTBOOT_SERVICE,
+                            ToolScreenMode.FASTBOOT_UNLOCK,
+                            ToolScreenMode.CMD_TERMINAL
+                        )
+                        val idx = cycleModes.indexOf(uiState.screenMode)
+                        val next = if (idx >= 0) cycleModes[(idx + 1) % cycleModes.size] else ToolScreenMode.FASTBOOT_INFO
                         viewModel.navigateToMode(next)
                     },
                     onUsbBadgeClick = {
                         viewModel.requestActivePortPermission()
                     },
                     onOpenAbout = {
-                        viewModel.setShowAboutDialog(true)
+                        viewModel.navigateToMode(ToolScreenMode.ABOUT)
                     },
                     onToggleTheme = {
                         viewModel.toggleTheme()
@@ -247,27 +267,32 @@ fun FastDeckRootApp(
                 )
             }
         ) { innerPadding ->
-            if (uiState.showAboutDialog) {
-                AboutCommandReferenceDialog(
-                    isDark = isDark,
-                    onDismiss = { viewModel.setShowAboutDialog(false) }
-                )
-            }
-            if (uiState.screenMode == ToolScreenMode.CMD_TERMINAL) {
-                FullscreenCliTerminalScreen(
+            val contentModifier = Modifier
+                .padding(innerPadding)
+                .consumeWindowInsets(innerPadding)
+
+            when (uiState.screenMode) {
+                ToolScreenMode.CMD_TERMINAL -> FullscreenCliTerminalScreen(
                     uiState = uiState,
                     onTerminalInputChange = { viewModel.updateTerminalInput(it) },
                     onSubmitCommand = { viewModel.submitTerminalCommand(it) },
-                    modifier = Modifier
-                        .padding(innerPadding)
-                        .consumeWindowInsets(innerPadding)
+                    modifier = contentModifier
                 )
-            } else {
-                WorkbenchScreen(
+                ToolScreenMode.SETTINGS -> SettingsScreen(
+                    uiState = uiState,
+                    onSelectThemeMode = { viewModel.setThemeMode(it) },
+                    onSelectThemeDesign = { viewModel.setThemeDesign(it) },
+                    onSelectFontSize = { viewModel.setFontSize(it) },
+                    onToggleSound = { viewModel.setSoundEnabled(it) },
+                    modifier = contentModifier
+                )
+                ToolScreenMode.ABOUT -> AboutScreen(
+                    modifier = contentModifier
+                )
+                else -> WorkbenchScreen(
                     uiState = uiState,
                     availableActions = viewModel.getAvailableActions(),
                     onSelectBrand = { viewModel.setBrand(it) },
-                    onSelectActionGroup = { viewModel.setActionGroup(it) },
                     onSelectAction = { viewModel.setSelectedAction(it) },
                     onSelectPartition = { viewModel.setPartition(it) },
                     onToggleVerity = { viewModel.toggleDisableVerity() },
@@ -276,15 +301,10 @@ fun FastDeckRootApp(
                     onToggleFastbootd = { viewModel.toggleUseFastbootd() },
                     onToggleStep = { viewModel.toggleFlashStep(it) },
                     onPickFile = { filePickerLauncher.launch(arrayOf("*/*")) },
-                    onScanPorts = { viewModel.scanUsbPorts() },
+                    onScanPorts = { viewModel.scanUsbPorts(userInitiated = true) },
                     onStartPressed = { viewModel.onStartPressed() },
-                    onExecuteCommand = { viewModel.executeCommand(it) },
-                    onRawCommandChange = { viewModel.updateRawCommandInput(it) },
                     onClearLogs = { viewModel.clearLogs() },
-                    onDismissAbout = { viewModel.setShowAboutDialog(false) },
-                    modifier = Modifier
-                        .padding(innerPadding)
-                        .consumeWindowInsets(innerPadding)
+                    modifier = contentModifier
                 )
             }
         }
@@ -300,26 +320,18 @@ private fun ToolHeaderTopBar(
     onOpenAbout: () -> Unit,
     onToggleTheme: () -> Unit
 ) {
+    val palette = LocalAppPalette.current
     val isTerminal = uiState.screenMode == ToolScreenMode.CMD_TERMINAL
-    val isDark = uiState.themeMode == ThemeMode.DARK
-    val barBg = when {
-        isTerminal && isDark -> Color(0xFF000000)
-        isTerminal && !isDark -> Color(0xFFFFFFFF)
-        isDark -> Color(0xFF070B14)
-        else -> Color(0xFFFFFFFF)
-    }
-    val badgeBorderColor = when (uiState.screenMode) {
-        ToolScreenMode.FASTBOOT_ONECLICK -> if (isDark) Color(0xFF10B981) else Color(0xFF059669)
-        ToolScreenMode.FASTBOOT_FLASH -> if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626)
-        ToolScreenMode.ADB_ONECLICK -> if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
-        ToolScreenMode.CMD_TERMINAL -> if (isDark) Color(0xFFF59E0B) else Color(0xFFD97706)
-    }
+    val barBg = if (isTerminal) palette.terminalBg else palette.headerBg
 
-    val usbBg = if (isDark) Color(0xFF1E1B4B) else Color(0xFFEEF2FF)
-    val usbBorder = if (isDark) Color(0xFF4F46E5) else Color(0xFF6366F1)
-    val usbIconTint = if (isDark) Color(0xFF818CF8) else Color(0xFF4338CA)
-    val usbTextColor = if (isDark) Color.White else Color(0xFF312E81)
-    val infoTint = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
+    val badgeBorderColor = when {
+        uiState.screenMode.isAdbSection -> palette.badgeAdb
+        uiState.screenMode == ToolScreenMode.FASTBOOT_FLASH -> palette.badgeFlash
+        uiState.screenMode.isFastbootSection -> palette.badgeFastboot
+        uiState.screenMode == ToolScreenMode.CMD_TERMINAL -> palette.badgeTerminal
+        uiState.screenMode == ToolScreenMode.SETTINGS -> palette.badgeSetting
+        else -> palette.badgeAbout
+    }
 
     Surface(
         color = barBg,
@@ -344,13 +356,13 @@ private fun ToolHeaderTopBar(
                     IconButton(
                         onClick = onOpenDrawer,
                         modifier = Modifier
-                            .size(36.dp)
+                            .size(40.dp)
                             .testTag("drawer_menu_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Menu,
                             contentDescription = "Open Menu",
-                            tint = if (isDark) Color.White else Color(0xFF0F172A)
+                            tint = palette.textPrimary
                         )
                     }
 
@@ -358,7 +370,7 @@ private fun ToolHeaderTopBar(
 
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = badgeBorderColor.copy(alpha = if (isDark) 0.14f else 0.10f),
+                        color = badgeBorderColor.copy(alpha = if (palette.isDark) 0.14f else 0.10f),
                         border = BorderStroke(1.dp, badgeBorderColor),
                         modifier = Modifier
                             .heightIn(min = 32.dp)
@@ -372,6 +384,8 @@ private fun ToolHeaderTopBar(
                             Icon(
                                 imageVector = when (uiState.screenMode) {
                                     ToolScreenMode.FASTBOOT_FLASH -> Icons.Default.Bolt
+                                    ToolScreenMode.SETTINGS -> Icons.Default.Settings
+                                    ToolScreenMode.ABOUT -> Icons.Default.Info
                                     else -> Icons.Default.Terminal
                                 },
                                 contentDescription = null,
@@ -382,7 +396,7 @@ private fun ToolHeaderTopBar(
                             Text(
                                 text = uiState.screenMode.badgeTitle,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (isDark) Color.White else Color(0xFF0F172A),
+                                color = palette.textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -397,8 +411,8 @@ private fun ToolHeaderTopBar(
                     val firstPort = uiState.usbPorts.firstOrNull()
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = usbBg,
-                        border = BorderStroke(1.dp, usbBorder),
+                        color = palette.usbBadgeBg,
+                        border = BorderStroke(1.dp, palette.usbBadgeBorder),
                         modifier = Modifier
                             .heightIn(min = 32.dp)
                             .clickable { onUsbBadgeClick() }
@@ -411,7 +425,7 @@ private fun ToolHeaderTopBar(
                             Icon(
                                 imageVector = Icons.Default.Usb,
                                 contentDescription = "USB OTG Status",
-                                tint = usbIconTint,
+                                tint = palette.accentSecondary,
                                 modifier = Modifier.size(13.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
@@ -423,7 +437,7 @@ private fun ToolHeaderTopBar(
                                 },
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 10.sp,
-                                color = usbTextColor,
+                                color = palette.usbBadgeText,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -437,13 +451,13 @@ private fun ToolHeaderTopBar(
                         IconButton(
                             onClick = onOpenAbout,
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(36.dp)
                                 .testTag("topbar_about_button")
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Info,
-                                contentDescription = "About Commands",
-                                tint = infoTint,
+                                contentDescription = "Open About Screen",
+                                tint = palette.accentPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -451,61 +465,48 @@ private fun ToolHeaderTopBar(
                         IconButton(
                             onClick = onToggleTheme,
                             modifier = Modifier
-                                .size(34.dp)
+                                .size(36.dp)
                                 .testTag("topbar_theme_toggle")
                         ) {
                             Icon(
-                                imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                imageVector = if (palette.isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
                                 contentDescription = "Toggle Light or Dark Theme",
-                                tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
+                                tint = if (palette.isDark) Color(0xFFFACC15) else palette.textPrimary,
                                 modifier = Modifier.size(18.dp)
                             )
                         }
                     }
                 }
             }
-            HorizontalDivider(
-                color = when {
-                    isTerminal && isDark -> Color(0xFF1A1A1A)
-                    isDark -> Color(0xFF1E293B)
-                    else -> Color(0xFFCBD5E1)
-                }
-            )
+            HorizontalDivider(color = palette.divider)
         }
     }
 }
 
 @Composable
-private fun AdbFastbootDrawerContent(
+private fun FastDeckDrawerContent(
     uiState: ServiceUiState,
-    isDark: Boolean,
-    onSelectMode: (ToolScreenMode) -> Unit,
-    onOpenAbout: () -> Unit,
-    onToggleTheme: () -> Unit
+    onSelectMode: (ToolScreenMode) -> Unit
 ) {
+    val palette = LocalAppPalette.current
+    var adbExpanded by remember { mutableStateOf(true) }
     var fastbootExpanded by remember { mutableStateOf(true) }
     val firstPort = uiState.usbPorts.firstOrNull()
-
-    val primaryText = if (isDark) Color.White else Color(0xFF0F172A)
-    val secondaryText = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
-    val cardBg = if (isDark) Color(0xFF111827) else Color(0xFFFFFFFF)
-    val cardBorder = if (isDark) Color(0xFF1E293B) else Color(0xFFCBD5E1)
-    val statusBoxBg = if (isDark) Color(0xFF131B2E) else Color(0xFFF1F5F9)
-    val accentBlue = if (isDark) Color(0xFF38BDF8) else Color(0xFF0284C7)
 
     Column(
         modifier = Modifier
             .fillMaxHeight()
             .systemBarsPadding()
-            .padding(16.dp),
+            .padding(14.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Drawer Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -513,46 +514,48 @@ private fun AdbFastbootDrawerContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "NATIVE UNLOCK TOOL",
+                        text = "FASTDECK OTG",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
-                        color = primaryText,
+                        color = palette.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "Multi-Brand USB OTG Platform",
+                        text = "Android 10–16 Service Suite",
                         style = MaterialTheme.typography.labelSmall,
-                        color = secondaryText,
+                        color = palette.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Surface(
-                    color = Color(0xFF2563EB),
+                    color = palette.accentPrimary.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, palette.accentPrimary),
                     shape = RoundedCornerShape(6.dp)
                 ) {
                     Text(
                         text = "PRO v3.0",
                         style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
+                        color = palette.accentPrimary,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
             }
 
+            // Active OTG Port Pill
             Surface(
                 shape = RoundedCornerShape(8.dp),
-                color = statusBoxBg,
-                border = BorderStroke(1.dp, cardBorder),
+                color = palette.cardAltBg,
+                border = BorderStroke(1.dp, palette.cardBorder),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -565,7 +568,7 @@ private fun AdbFastbootDrawerContent(
                                 .size(8.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (firstPort != null) Color(0xFF10B981) else Color(0xFF64748B)
+                                    if (firstPort != null) Color(0xFF10B981) else palette.textMuted
                                 )
                         )
                         Spacer(modifier = Modifier.width(8.dp))
@@ -573,7 +576,7 @@ private fun AdbFastbootDrawerContent(
                             text = firstPort?.productName?.uppercase() ?: "WAITING USB OTG",
                             style = MaterialTheme.typography.labelMedium,
                             fontFamily = FontFamily.Monospace,
-                            color = if (isDark) Color(0xFF94A3B8) else Color(0xFF334155),
+                            color = palette.textSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -583,23 +586,31 @@ private fun AdbFastbootDrawerContent(
                         text = firstPort?.vendorHex ?: "0x18D1",
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace,
-                        color = accentBlue,
+                        color = palette.accentPrimary,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
 
+            // 1. ADB Expandable Section (Info, Unlock, Service)
             Surface(
                 shape = RoundedCornerShape(12.dp),
-                color = cardBg,
-                border = BorderStroke(1.dp, cardBorder),
-                modifier = Modifier.fillMaxWidth()
+                color = palette.cardBg,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 1.dp,
+                        color = if (uiState.screenMode.isAdbSection) palette.badgeAdb else palette.cardBorder,
+                        shape = RoundedCornerShape(12.dp)
+                    )
             ) {
-                Column(modifier = Modifier.padding(12.dp)) {
+                Column(modifier = Modifier.padding(10.dp)) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { fastbootExpanded = !fastbootExpanded },
+                            .clickable { adbExpanded = !adbExpanded }
+                            .padding(vertical = 2.dp)
+                            .testTag("drawer_adb_header"),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -609,113 +620,226 @@ private fun AdbFastbootDrawerContent(
                         ) {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (isDark) Color(0xFF3B1821) else Color(0xFFFEE2E2),
-                                modifier = Modifier.size(36.dp)
+                                color = palette.badgeAdb.copy(alpha = 0.16f),
+                                modifier = Modifier.size(34.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = Icons.Default.Bolt,
+                                        imageVector = Icons.Default.PhoneAndroid,
                                         contentDescription = null,
-                                        tint = if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626),
+                                        tint = palette.badgeAdb,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column {
                                 Text(
-                                    text = "Fastboot Mode (A10–A16)",
+                                    text = "ADB",
                                     style = MaterialTheme.typography.titleMedium,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = primaryText,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = palette.textPrimary
                                 )
                                 Text(
-                                    text = "Bootloader / Fastbootd / Flash",
+                                    text = "Info • Unlock • Service",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = secondaryText,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    color = palette.textSecondary
                                 )
                             }
                         }
                         Icon(
-                            imageVector = Icons.Default.ExpandMore,
-                            contentDescription = null,
-                            tint = if (isDark) Color(0xFFEF4444) else Color(0xFFDC2626)
+                            imageVector = if (adbExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = "Toggle ADB Section",
+                            tint = palette.badgeAdb
                         )
                     }
 
-                    if (fastbootExpanded) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = cardBorder)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        DrawerSubItem(
-                            icon = Icons.Default.LockOpen,
-                            iconTint = if (isDark) Color(0xFFFACC15) else Color(0xFFD97706),
-                            title = "Fastboot One-Click",
-                            subtitle = "Bootloader Unlock, FRP & OEM Service",
-                            selected = uiState.screenMode == ToolScreenMode.FASTBOOT_ONECLICK,
-                            isDark = isDark,
-                            onClick = { onSelectMode(ToolScreenMode.FASTBOOT_ONECLICK) }
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        DrawerSubItem(
-                            icon = Icons.Default.Bolt,
-                            iconTint = accentBlue,
-                            title = "Flash Tool",
-                            subtitle = ".img / .bat / UPDATE.APP USB Flasher",
-                            selected = uiState.screenMode == ToolScreenMode.FASTBOOT_FLASH,
-                            isDark = isDark,
-                            onClick = { onSelectMode(ToolScreenMode.FASTBOOT_FLASH) }
-                        )
+                    AnimatedVisibility(visible = adbExpanded) {
+                        Column(
+                            modifier = Modifier.padding(top = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            HorizontalDivider(color = palette.divider)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            DrawerSubItem(
+                                icon = Icons.Default.PermDeviceInformation,
+                                iconTint = palette.badgeAdb,
+                                title = "Info",
+                                subtitle = "Device Props, AVB, Battery & Patch",
+                                selected = uiState.screenMode == ToolScreenMode.ADB_INFO,
+                                onClick = { onSelectMode(ToolScreenMode.ADB_INFO) },
+                                tag = "drawer_adb_info"
+                            )
+                            DrawerSubItem(
+                                icon = Icons.Default.LockOpen,
+                                iconTint = palette.actionHighlight,
+                                title = "Unlock",
+                                subtitle = "FRP, Setup Bypass & Account Helpers",
+                                selected = uiState.screenMode == ToolScreenMode.ADB_UNLOCK,
+                                onClick = { onSelectMode(ToolScreenMode.ADB_UNLOCK) },
+                                tag = "drawer_adb_unlock"
+                            )
+                            DrawerSubItem(
+                                icon = Icons.Default.Build,
+                                iconTint = palette.accentSecondary,
+                                title = "Service",
+                                subtitle = "Debloat, Reboots, Apps & Optimize",
+                                selected = uiState.screenMode == ToolScreenMode.ADB_SERVICE,
+                                onClick = { onSelectMode(ToolScreenMode.ADB_SERVICE) },
+                                tag = "drawer_adb_service"
+                            )
+                        }
                     }
                 }
             }
 
-            DrawerPrimaryCard(
-                icon = Icons.Default.PhoneAndroid,
-                iconBg = if (isDark) Color(0xFF064E3B) else Color(0xFFD1FAE5),
-                iconTint = if (isDark) Color(0xFF10B981) else Color(0xFF059669),
-                cardBg = cardBg,
-                primaryText = primaryText,
-                secondaryText = secondaryText,
-                borderColor = if (uiState.screenMode == ToolScreenMode.ADB_ONECLICK) {
-                    Color(0xFF10B981)
-                } else {
-                    cardBorder
-                },
-                title = "ADB One-Click Service",
-                subtitle = "ADB System Info, Debloat & Reboots",
-                onClick = { onSelectMode(ToolScreenMode.ADB_ONECLICK) }
-            )
+            // 2. Fastboot Expandable Section (Flash, Info, Service, Unlock)
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = palette.cardBg,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        width = 1.dp,
+                        color = if (uiState.screenMode.isFastbootSection) palette.badgeFastboot else palette.cardBorder,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { fastbootExpanded = !fastbootExpanded }
+                            .padding(vertical = 2.dp)
+                            .testTag("drawer_fastboot_header"),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = palette.badgeFastboot.copy(alpha = 0.16f),
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Bolt,
+                                        contentDescription = null,
+                                        tint = palette.badgeFastboot,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Fastboot",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = palette.textPrimary
+                                )
+                                Text(
+                                    text = "Flash • Info • Service • Unlock",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textSecondary
+                                )
+                            }
+                        }
+                        Icon(
+                            imageVector = if (fastbootExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            contentDescription = "Toggle Fastboot Section",
+                            tint = palette.badgeFastboot
+                        )
+                    }
 
+                    AnimatedVisibility(visible = fastbootExpanded) {
+                        Column(
+                            modifier = Modifier.padding(top = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            HorizontalDivider(color = palette.divider)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            DrawerSubItem(
+                                icon = Icons.Default.Bolt,
+                                iconTint = palette.badgeFlash,
+                                title = "Flash",
+                                subtitle = ".img / .bat / UPDATE.APP USB Flasher",
+                                selected = uiState.screenMode == ToolScreenMode.FASTBOOT_FLASH,
+                                onClick = { onSelectMode(ToolScreenMode.FASTBOOT_FLASH) },
+                                tag = "drawer_fastboot_flash"
+                            )
+                            DrawerSubItem(
+                                icon = Icons.Default.PermDeviceInformation,
+                                iconTint = palette.badgeFastboot,
+                                title = "Info",
+                                subtitle = "Getvar All, Slots, ARB & OEM State",
+                                selected = uiState.screenMode == ToolScreenMode.FASTBOOT_INFO,
+                                onClick = { onSelectMode(ToolScreenMode.FASTBOOT_INFO) },
+                                tag = "drawer_fastboot_info"
+                            )
+                            DrawerSubItem(
+                                icon = Icons.Default.Build,
+                                iconTint = palette.accentPrimary,
+                                title = "Service",
+                                subtitle = "Wipe, Slot A/B, Logical Parts & Reboot",
+                                selected = uiState.screenMode == ToolScreenMode.FASTBOOT_SERVICE,
+                                onClick = { onSelectMode(ToolScreenMode.FASTBOOT_SERVICE) },
+                                tag = "drawer_fastboot_service"
+                            )
+                            DrawerSubItem(
+                                icon = Icons.Default.LockOpen,
+                                iconTint = palette.actionHighlight,
+                                title = "Unlock",
+                                subtitle = "Bootloader Unlock, Relock & FRP Erase",
+                                selected = uiState.screenMode == ToolScreenMode.FASTBOOT_UNLOCK,
+                                onClick = { onSelectMode(ToolScreenMode.FASTBOOT_UNLOCK) },
+                                tag = "drawer_fastboot_unlock"
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 3. Terminal CLI
             DrawerPrimaryCard(
                 icon = Icons.Default.DeveloperBoard,
-                iconBg = if (isDark) Color(0xFF1E3A8A) else Color(0xFFE0F2FE),
-                iconTint = accentBlue,
-                cardBg = cardBg,
-                primaryText = primaryText,
-                secondaryText = secondaryText,
-                borderColor = if (uiState.screenMode == ToolScreenMode.CMD_TERMINAL) {
-                    accentBlue
-                } else {
-                    cardBorder
-                },
-                title = "Dedicated Terminal",
-                subtitle = "Custom Command Execution Shell",
-                onClick = { onSelectMode(ToolScreenMode.CMD_TERMINAL) }
+                iconTint = palette.badgeTerminal,
+                selected = uiState.screenMode == ToolScreenMode.CMD_TERMINAL,
+                title = "Terminal CLI",
+                subtitle = "Termux-Style Command Shell",
+                onClick = { onSelectMode(ToolScreenMode.CMD_TERMINAL) },
+                tag = "drawer_terminal_cli"
+            )
+
+            // 4. Setting
+            DrawerPrimaryCard(
+                icon = Icons.Default.Settings,
+                iconTint = palette.badgeSetting,
+                selected = uiState.screenMode == ToolScreenMode.SETTINGS,
+                title = "Setting",
+                subtitle = "Font Size & 3 Theme Designs",
+                onClick = { onSelectMode(ToolScreenMode.SETTINGS) },
+                tag = "drawer_settings"
+            )
+
+            // 5. About
+            DrawerPrimaryCard(
+                icon = Icons.Default.Info,
+                iconTint = palette.badgeAbout,
+                selected = uiState.screenMode == ToolScreenMode.ABOUT,
+                title = "About",
+                subtitle = "Command Reference & App Info",
+                onClick = { onSelectMode(ToolScreenMode.ABOUT) },
+                tag = "drawer_about"
             )
         }
 
         Column {
-            HorizontalDivider(color = cardBorder)
-            Spacer(modifier = Modifier.height(10.dp))
+            HorizontalDivider(color = palette.divider)
+            Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -725,42 +849,14 @@ private fun AdbFastbootDrawerContent(
                     text = "Android Native USB Engine",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
-                    color = secondaryText
+                    color = palette.textMuted
                 )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .clickable { onToggleTheme() }
-                            .testTag("drawer_theme_toggle")
-                    ) {
-                        Icon(
-                            imageVector = if (isDark) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = "Toggle Theme",
-                            tint = if (isDark) Color(0xFFFACC15) else Color(0xFF0F172A),
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = if (isDark) "Light" else "Dark",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = primaryText,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Text(
-                        text = "About",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = accentBlue,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier
-                            .clickable { onOpenAbout() }
-                            .testTag("drawer_about_button")
-                    )
-                }
+                Text(
+                    text = uiState.themeDesign.displayName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.accentPrimary,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -773,29 +869,29 @@ private fun DrawerSubItem(
     title: String,
     subtitle: String,
     selected: Boolean,
-    isDark: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    tag: String
 ) {
-    val selectedBg = if (isDark) Color(0xFF1E293B) else Color(0xFFE2E8F0)
-    val titleColor = if (isDark) Color.White else Color(0xFF0F172A)
-    val subColor = if (isDark) Color(0xFF64748B) else Color(0xFF475569)
+    val palette = LocalAppPalette.current
 
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (selected) selectedBg else Color.Transparent,
+        color = if (selected) palette.cardAltBg else Color.Transparent,
+        border = if (selected) BorderStroke(1.dp, iconTint.copy(alpha = 0.6f)) else null,
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
+            .testTag(tag)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
                 tint = iconTint,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(17.dp)
             )
             Spacer(modifier = Modifier.width(10.dp))
             Column(modifier = Modifier.weight(1f)) {
@@ -803,14 +899,14 @@ private fun DrawerSubItem(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
-                    color = titleColor,
+                    color = if (selected) palette.textPrimary else palette.textPrimary.copy(alpha = 0.9f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = subColor,
+                    color = palette.textSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -822,28 +918,28 @@ private fun DrawerSubItem(
 @Composable
 private fun DrawerPrimaryCard(
     icon: ImageVector,
-    iconBg: Color,
     iconTint: Color,
-    cardBg: Color,
-    primaryText: Color,
-    secondaryText: Color,
-    borderColor: Color,
+    selected: Boolean,
     title: String,
     subtitle: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    tag: String
 ) {
+    val palette = LocalAppPalette.current
+
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = cardBg,
-        border = BorderStroke(1.dp, borderColor),
+        color = if (selected) palette.cardAltBg else palette.cardBg,
+        border = BorderStroke(1.dp, if (selected) iconTint else palette.cardBorder),
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
+            .testTag(tag)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(11.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -853,8 +949,8 @@ private fun DrawerPrimaryCard(
             ) {
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = iconBg,
-                    modifier = Modifier.size(36.dp)
+                    color = iconTint.copy(alpha = 0.16f),
+                    modifier = Modifier.size(34.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
@@ -872,14 +968,14 @@ private fun DrawerPrimaryCard(
                         style = MaterialTheme.typography.titleMedium,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = primaryText,
+                        color = palette.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.labelSmall,
-                        color = secondaryText,
+                        color = palette.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -888,7 +984,7 @@ private fun DrawerPrimaryCard(
             Icon(
                 imageVector = Icons.Default.ChevronRight,
                 contentDescription = null,
-                tint = secondaryText
+                tint = if (selected) iconTint else palette.textMuted
             )
         }
     }
