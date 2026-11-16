@@ -113,10 +113,6 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         )
     }
 
-    /**
-     * Strictly filters actions by active Drawer sub-mode (ADB/Fastboot + Info/Unlock/Service)
-     * and selected Brand so every section stays focused and uncluttered.
-     */
     fun getAvailableActions(
         mode: ToolScreenMode = _uiState.value.screenMode,
         brand: ServiceBrand = _uiState.value.selectedBrand
@@ -465,7 +461,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun onStartPressed() {
-        if (_uiState.value.isBusy) {
+        if (_uiState.value.isBusy && !usbController.isInteractiveShellRunning) {
             stopActiveOperation()
             return
         }
@@ -487,6 +483,12 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun stopActiveOperation() {
+        if (usbController.isInteractiveShellRunning) {
+            usbController.stopInteractiveAdbShell()
+            appendTerminalLine("~ $ exit", isCommand = true)
+            appendTerminalLine("[Terminal Session Stopped]", isError = true)
+        }
+        
         val job = activeOperationJob
         activeOperationJob = null
         job?.cancel()
@@ -511,10 +513,10 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
     }
 
     /**
-     * Executes pure Termux-style CLI commands strictly inside the dedicated Terminal screen.
+     * Executes pure Termux-style CLI commands.
+     * Integrates Interactive Shell Mode for continuous ADB sessions.
      */
     fun submitTerminalCommand(rawCmd: String) {
-        if (_uiState.value.isBusy) return
         val cmd = rawCmd.trim()
         _uiState.update { it.copy(terminalInput = "") }
 
@@ -527,8 +529,15 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
             _uiState.update { it.copy(terminalLines = emptyList()) }
             return
         }
+        
+        if (cmd.equals("exit", ignoreCase = true)) {
+            stopActiveOperation()
+            return
+        }
 
-        appendTerminalLine("~ $ $cmd", isCommand = true)
+        val promptPrefix = if (usbController.isInteractiveShellRunning) "\$ " else "~ $ "
+        appendTerminalLine("$promptPrefix$cmd", isCommand = true)
+        
         _uiState.update { state ->
             val updatedHistory = if (state.terminalHistory.lastOrNull() == cmd) {
                 state.terminalHistory
@@ -539,9 +548,24 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
         }
 
         if (cmd.equals("help", ignoreCase = true)) {
-            appendTerminalLine("fastboot devices | fastboot <cmd> | adb devices | adb shell <cmd> | adb reboot | clear")
+            appendTerminalLine("fastboot devices | fastboot <cmd> | adb devices | adb shell | clear | exit")
             return
         }
+
+        // =========================================================================
+        // Interactive Shell Routing Logic
+        // =========================================================================
+        if (usbController.isInteractiveShellRunning) {
+            // Already in shell -> Route all raw input directly to the open stream
+            viewModelScope.launch(Dispatchers.IO) {
+                usbController.writeInteractiveAdbShell(cmd) { msg, lvl ->
+                    appendTerminalLine(msg, isError = lvl == LogLevel.FAIL)
+                }
+            }
+            return
+        }
+
+        if (_uiState.value.isBusy) return
 
         activeOperationJob = viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true) }
@@ -576,6 +600,7 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                                     appendTerminalLine("${p.serialNumber}\tfastboot")
                                 }
                             }
+                            _uiState.update { it.copy(isBusy = false) }
                         }
 
                         lower == "adb devices" || lower == "adb devices -l" -> {
@@ -587,6 +612,27 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                                 if (!p.hasPermission) {
                                     usbController.requestPermission(p.deviceName)
                                 }
+                            }
+                            _uiState.update { it.copy(isBusy = false) }
+                        }
+                        
+                        lower == "adb shell" -> {
+                            // User requested to open the interactive shell session
+                            val portName = activePort?.deviceName
+                            if (portName == null) {
+                                appendTerminalLine("error: no devices/emulators found", isError = true)
+                                _uiState.update { it.copy(isBusy = false) }
+                            } else {
+                                usbController.startInteractiveAdbShell(
+                                    deviceName = portName,
+                                    onLog = { msg, lvl ->
+                                        appendTerminalLine(msg, isError = lvl == LogLevel.FAIL)
+                                    },
+                                    onStopped = {
+                                        _uiState.update { it.copy(isBusy = false) }
+                                    }
+                                )
+                                // We DO NOT set isBusy = false here, because the session stays open in the background
                             }
                         }
 
@@ -626,25 +672,11 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                                     )
                                 }
                             }
-                        }
-
-                        lower == "adb" || lower.startsWith("adb ") -> {
-                            val portName = activePort?.deviceName
-                            if (portName == null) {
-                                appendTerminalLine("error: no devices/emulators found", isError = true)
-                            } else {
-                                usbController.executeAdbOverUsbOtg(
-                                    deviceName = portName,
-                                    command = cmd,
-                                    verboseWireLogs = false,
-                                    onLog = { msg, lvl ->
-                                        appendTerminalLine(msg, isError = lvl == LogLevel.FAIL)
-                                    }
-                                )
-                            }
+                            _uiState.update { it.copy(isBusy = false) }
                         }
 
                         else -> {
+                            // Any other command goes to one-shot ADB or local shell
                             val portName = activePort?.deviceName
                             if (portName != null && activePort.protocolType == UsbProtocolType.ADB) {
                                 usbController.executeAdbOverUsbOtg(
@@ -663,10 +695,11 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
                                     }
                                 )
                             }
+                            _uiState.update { it.copy(isBusy = false) }
                         }
                     }
                 }
-            } finally {
+            } catch (e: Exception) {
                 _uiState.update { it.copy(isBusy = false) }
             }
         }
@@ -701,7 +734,6 @@ class ServiceViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        // Reset step states cleanly before starting
         updateFlashSteps { step ->
             if (step.enabled) {
                 step.copy(status = FlashStepStatus.QUEUED, progress = 0f)
