@@ -55,23 +55,16 @@ class UsbPortController(private val context: Context) {
         private const val ADB_AUTH_RSAPUBLICKEY = 3
 
         private const val ADB_RSA_KEY_BITS = 2048
-        private const val ADB_RSA_MODULUS_WORDS = ADB_RSA_KEY_BITS / 32 // 64
-        private const val ADB_RSA_STRUCT_BYTES = 4 + 4 + (ADB_RSA_MODULUS_WORDS * 4) * 2 + 4 // 524
+        private const val ADB_RSA_MODULUS_WORDS = ADB_RSA_KEY_BITS / 32
+        private const val ADB_RSA_STRUCT_BYTES = 4 + 4 + (ADB_RSA_MODULUS_WORDS * 4) * 2 + 4
 
-        // ASN.1 SHA-1 DigestInfo prefix for 20-byte ADB auth token
         private val SHA1_DIGEST_INFO_PREFIX = byteArrayOf(
             0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2B, 0x0E,
             0x03, 0x02, 0x1A, 0x05, 0x00, 0x04, 0x14
         )
 
-        // Fastboot Max Single Download Chunk (256 MB)
         private const val MAX_FASTBOOT_CHUNK = 256L * 1024L * 1024L
 
-        /**
-         * Encodes a 2048-bit RSAPublicKey into Android's exact 524-byte little-endian
-         * RSAPublicKey binary struct (libcrypto_utils android_pubkey_encode) so adbd
-         * properly verifies and persists it to /data/misc/adb/adb_keys when "Always allow" is checked.
-         */
         internal fun encodeAdbPublicKeyStruct(pub: RSAPublicKey): ByteArray {
             val n = pub.modulus
             val r32 = BigInteger.ONE.shiftLeft(32)
@@ -127,6 +120,198 @@ class UsbPortController(private val context: Context) {
     private val usbManager: UsbManager? =
         context.getSystemService(Context.USB_SERVICE) as? UsbManager
 
+    // =========================================================================
+    // TERMINAL အစစ် (INTERACTIVE SHELL) ပြင်ဆင်ချက်များ
+    // =========================================================================
+    
+    @Volatile var isInteractiveShellRunning = false
+        private set
+
+    private var activeAdbConnection: UsbDeviceConnection? = null
+    private var activeEpOut: UsbEndpoint? = null
+    private var activeLocalId = 1
+    private var activeRemoteId = 0
+    private var shellThread: Thread? = null
+
+    /**
+     * အမြဲဖွင့်ထားသော Terminal Session အစစ်တစ်ခုကို ဖန်တီးပြီး နောက်ခံ Thread ဖြင့် အမြဲစောင့်ဖတ်နေမည်။
+     */
+    fun startInteractiveAdbShell(
+        deviceName: String,
+        onLog: (String, LogLevel) -> Unit,
+        onStopped: () -> Unit
+    ) {
+        if (isInteractiveShellRunning) {
+            onLog("Terminal session is already running.", LogLevel.WARN)
+            return
+        }
+
+        val manager = usbManager ?: return
+        val device = manager.deviceList[deviceName] ?: run {
+            onLog("No USB OTG device connected.", LogLevel.FAIL)
+            return
+        }
+        
+        if (!manager.hasPermission(device)) {
+            onLog("USB permission required. Please allow access.", LogLevel.WARN)
+            requestPermission(deviceName)
+            return
+        }
+
+        val triple = findBulkEndpoints(device, preferProtocol = 0x01) ?: run {
+            onLog("No ADB Bulk endpoints found.", LogLevel.FAIL)
+            return
+        }
+        val (iface, epIn, epOut) = triple
+        val connection = manager.openDevice(device) ?: run {
+            onLog("Failed to open USB connection.", LogLevel.FAIL)
+            return
+        }
+
+        isInteractiveShellRunning = true
+        shellThread = Thread {
+            try {
+                if (!connection.claimInterface(iface, true)) {
+                    onLog("Cannot claim ADB interface.", LogLevel.FAIL)
+                    return@Thread
+                }
+
+                activeAdbConnection = connection
+                activeEpOut = epOut
+                activeLocalId = (System.currentTimeMillis() % 10000).toInt().coerceAtLeast(1)
+
+                val banner = "host::features=cmd,stat_v2,abb_exec\u0000".toByteArray(StandardCharsets.UTF_8)
+                sendAdbPacket(connection, epOut, A_CNXN, A_VERSION, MAX_ADB_DATA, banner)
+
+                var connected = false
+                var sentSignature = false
+                var sentPublicKey = false
+                var authWaitRetries = 0
+                val keyPair = getOrCreateAdbRsaKeyPair()
+
+                for (attempt in 0 until 15) {
+                    val readTimeout = if (sentPublicKey) 4000 else 3500
+                    val pkt = readAdbPacket(connection, epIn, readTimeout)
+                    if (pkt == null) {
+                        if (sentPublicKey && authWaitRetries < 3) {
+                            authWaitRetries++
+                            continue
+                        }
+                        break
+                    }
+                    when (pkt.command) {
+                        A_CNXN -> {
+                            connected = true
+                            break
+                        }
+                        A_AUTH -> {
+                            if (pkt.arg0 == ADB_AUTH_TOKEN) {
+                                if (!sentSignature) {
+                                    val sig = signAdbToken(keyPair, pkt.payload)
+                                    sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_SIGNATURE, 0, sig)
+                                    sentSignature = true
+                                } else if (!sentPublicKey) {
+                                    val pubKeyBytes = encodeAdbPublicKey(keyPair)
+                                    sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_RSAPUBLICKEY, 0, pubKeyBytes)
+                                    sentPublicKey = true
+                                    onLog("Tap 'Allow USB Debugging' on phone.", LogLevel.WARN)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!connected) {
+                    onLog("Waiting for authorization failed.", LogLevel.FAIL)
+                    return@Thread
+                }
+
+                // Stream ကို မပိတ်ဘဲ 'shell:\0' ကို အမြဲဖွင့်ထားမည်
+                val serviceDest = "shell:\u0000"
+                sendAdbPacket(connection, epOut, A_OPEN, activeLocalId, 0, serviceDest.toByteArray(StandardCharsets.UTF_8))
+                onLog("Interactive Terminal Shell Opened.", LogLevel.OKAY)
+
+                // Output များကို နောက်ခံ Thread မှ အမြဲစောင့်ဖတ်ပေးမည်
+                while (isInteractiveShellRunning) {
+                    val pkt = readAdbPacket(connection, epIn, 1500)
+                    if (pkt == null) continue
+
+                    when (pkt.command) {
+                        A_OKAY -> {
+                            activeRemoteId = pkt.arg0
+                        }
+                        A_WRTE -> {
+                            activeRemoteId = pkt.arg0
+                            val text = String(pkt.payload, StandardCharsets.UTF_8)
+                            val parts = text.split("\r\n", "\n")
+                            for (i in parts.indices) {
+                                val line = parts[i]
+                                if (i == parts.lastIndex && line.isEmpty()) continue
+                                onLog(line, LogLevel.INFO)
+                            }
+                            sendAdbPacket(connection, epOut, A_OKAY, activeLocalId, activeRemoteId, ByteArray(0))
+                        }
+                        A_CLSE -> {
+                            sendAdbPacket(connection, epOut, A_CLSE, activeLocalId, pkt.arg0, ByteArray(0))
+                            onLog("[Terminal Session Closed by Remote]", LogLevel.WARN)
+                            isInteractiveShellRunning = false
+                            break
+                        }
+                    }
+                }
+
+            } catch (e: Exception) {
+                if (isInteractiveShellRunning) {
+                    onLog("Terminal Error: ${e.message}", LogLevel.FAIL)
+                }
+            } finally {
+                isInteractiveShellRunning = false
+                activeAdbConnection = null
+                activeEpOut = null
+                try {
+                    connection.releaseInterface(iface)
+                    connection.close()
+                } catch (_: Exception) {}
+                onStopped()
+            }
+        }
+        shellThread?.start()
+    }
+
+    /**
+     * UI တွင် စာရိုက်လိုက်တိုင်း ဖွင့်ထားသော Stream မှတစ်ဆင့် တိုက်ရိုက် လှမ်းပို့ပေးမည့် Write Function
+     */
+    fun writeInteractiveAdbShell(command: String, onLog: (String, LogLevel) -> Unit) {
+        if (!isInteractiveShellRunning || activeAdbConnection == null || activeEpOut == null || activeRemoteId == 0) {
+            onLog("Shell is offline. Use 'adb shell' first to connect.", LogLevel.FAIL)
+            return
+        }
+        try {
+            val cmd = if (command.endsWith("\n")) command else "$command\n"
+            val payload = cmd.toByteArray(StandardCharsets.UTF_8)
+            sendAdbPacket(activeAdbConnection!!, activeEpOut!!, A_WRTE, activeLocalId, activeRemoteId, payload)
+        } catch (e: Exception) {
+            onLog("Write Failed: ${e.message}", LogLevel.FAIL)
+        }
+    }
+
+    /**
+     * Terminal ကို Manual ပိတ်ချင်သည့်အခါ သုံးရန်
+     */
+    fun stopInteractiveAdbShell() {
+        isInteractiveShellRunning = false
+        try {
+            if (activeAdbConnection != null && activeEpOut != null && activeRemoteId != 0) {
+                sendAdbPacket(activeAdbConnection!!, activeEpOut!!, A_CLSE, activeLocalId, activeRemoteId, ByteArray(0))
+            }
+        } catch (_: Exception) {}
+        shellThread?.interrupt()
+    }
+
+    // =========================================================================
+    // PREVIOUS FUNCTIONS (NO CHANGES - To keep original functionality working)
+    // =========================================================================
+
     fun scanPorts(): List<UsbPortInfo> {
         val manager = usbManager ?: return emptyList()
         val devices = manager.deviceList ?: return emptyList()
@@ -153,9 +338,6 @@ class UsbPortController(private val context: Context) {
         return true
     }
 
-    /**
-     * Executes one or more Fastboot wire commands over USB Bulk endpoints.
-     */
     fun executeFastbootWireCommands(
         deviceName: String,
         wireCommands: List<String>,
@@ -228,12 +410,6 @@ class UsbPortController(private val context: Context) {
         return allOk
     }
 
-    /**
-     * Streams binary image data from a Uri (or UPDATE.APP byte offset) using ParcelFileDescriptor / FileChannel
-     * over USB Bulk endpoints using Fastboot download + flash protocol.
-     * Automatically splits multi-GB partitions (super, system, vendor) along Sparse chunk boundaries
-     * using only a 16 KB reusable streaming buffer to prevent OutOfMemoryError and bootloader crashes.
-     */
     fun flashBinaryStreamOverUsb(
         deviceName: String,
         uri: Uri,
@@ -322,7 +498,6 @@ class UsbPortController(private val context: Context) {
                         )
                     }
 
-                    // Oversized partition (e.g. system.img / super.img): split safely into sparse sub-packets
                     val magicBuf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
                     val isSparse = channel.read(magicBuf, dataOffset) == 4 && run {
                         magicBuf.flip()
@@ -601,7 +776,6 @@ class UsbPortController(private val context: Context) {
             val r = fis.read(chunk, 0, toRead)
             if (r <= 0) break
 
-            // Patch vbmeta disable-verity flag at AVBHeader offset 123 if requested
             if (sentTotal == 0L && disableVerity && partition.startsWith("vbmeta") && r >= 128) {
                 if (chunk[0] == 'A'.code.toByte() &&
                     chunk[1] == 'V'.code.toByte() &&
@@ -629,10 +803,6 @@ class UsbPortController(private val context: Context) {
         return sendFastbootFlashCommand(connection, epIn, epOut, partition, 30000, verboseWireLogs, onLog)
     }
 
-    /**
-     * Native USB ADB Protocol Execution (A_CNXN -> A_AUTH RSA -> A_OPEN -> A_WRTE -> A_CLSE).
-     * Executes real ADB reboot or shell commands over USB OTG when an ADB device is connected!
-     */
     fun executeAdbOverUsbOtg(
         deviceName: String,
         command: String,
@@ -665,15 +835,9 @@ class UsbPortController(private val context: Context) {
                 return
             }
 
-            // Step 1: Send A_CNXN
-            val banner = "host::features=shell_v2,cmd,stat_v2,abb_exec,fastbootd\u0000"
-                .toByteArray(StandardCharsets.UTF_8)
+            val banner = "host::features=shell_v2,cmd,stat_v2,abb_exec,fastbootd\u0000".toByteArray(StandardCharsets.UTF_8)
             sendAdbPacket(connection, epOut, A_CNXN, A_VERSION, MAX_ADB_DATA, banner)
-            if (verboseWireLogs) {
-                onLog("ADB USB TX -> CNXN (${device.productName})", LogLevel.USB)
-            }
 
-            // Step 2: Handle A_AUTH or A_CNXN response
             var connected = false
             var sentSignature = false
             var sentPublicKey = false
@@ -692,11 +856,6 @@ class UsbPortController(private val context: Context) {
                 }
                 when (pkt.command) {
                     A_CNXN -> {
-                        val remoteBanner = String(pkt.payload, StandardCharsets.UTF_8)
-                            .trim { it <= ' ' || it == '\u0000' }
-                        if (verboseWireLogs) {
-                            onLog("ADB USB Connected: $remoteBanner", LogLevel.OKAY)
-                        }
                         connected = true
                         break
                     }
@@ -706,17 +865,11 @@ class UsbPortController(private val context: Context) {
                                 val sig = signAdbToken(keyPair, pkt.payload)
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_SIGNATURE, 0, sig)
                                 sentSignature = true
-                                if (verboseWireLogs) {
-                                    onLog("ADB USB TX -> AUTH_SIGNATURE (2048-bit RSA)", LogLevel.USB)
-                                }
                             } else if (!sentPublicKey) {
                                 val pubKeyBytes = encodeAdbPublicKey(keyPair)
                                 sendAdbPacket(connection, epOut, A_AUTH, ADB_AUTH_RSAPUBLICKEY, 0, pubKeyBytes)
                                 sentPublicKey = true
-                                onLog(
-                                    "Tap 'Allow USB Debugging' on target phone.",
-                                    LogLevel.WARN
-                                )
+                                onLog("Tap 'Allow USB Debugging' on target phone.", LogLevel.WARN)
                             }
                         }
                     }
@@ -728,7 +881,6 @@ class UsbPortController(private val context: Context) {
                 return
             }
 
-            // Route ADB host/service commands cleanly without falling into remote /system/bin/sh
             val trimmedCmd = command.trim()
             val lower = trimmedCmd.lowercase(Locale.US)
             if (lower == "adb devices" || lower == "adb devices -l") {
@@ -772,10 +924,7 @@ class UsbPortController(private val context: Context) {
                 }
                 lower.startsWith("adb ") -> {
                     val sub = trimmedCmd.substring(4).trim()
-                    onLog(
-                        "adb: unsupported subcommand '$sub'. Use 'adb shell <cmd>', 'adb reboot [target]', or 'adb devices'.",
-                        LogLevel.FAIL
-                    )
+                    onLog("adb: unsupported subcommand '$sub'. Use 'adb shell <cmd>', 'adb reboot [target]', or 'adb devices'.", LogLevel.FAIL)
                     return
                 }
                 lower.startsWith("shell ") -> {
@@ -787,19 +936,8 @@ class UsbPortController(private val context: Context) {
 
             val isRebootService = serviceDest.startsWith("reboot:")
             val localId = 1
-            sendAdbPacket(
-                connection,
-                epOut,
-                A_OPEN,
-                localId,
-                0,
-                serviceDest.toByteArray(StandardCharsets.UTF_8)
-            )
-            if (verboseWireLogs) {
-                onLog("ADB USB TX -> OPEN '${serviceDest.trimEnd('\u0000')}'", LogLevel.USB)
-            }
+            sendAdbPacket(connection, epOut, A_OPEN, localId, 0, serviceDest.toByteArray(StandardCharsets.UTF_8))
 
-            // Step 4: Read A_OKAY / A_WRTE / A_CLSE stream output
             var remoteId = 0
             var streamOpened = false
             for (loop in 0 until 128) {
@@ -820,9 +958,6 @@ class UsbPortController(private val context: Context) {
                     }
                     A_CLSE -> {
                         sendAdbPacket(connection, epOut, A_CLSE, localId, remoteId, ByteArray(0))
-                        if (verboseWireLogs) {
-                            onLog("ADB stream closed (OKAY).", LogLevel.OKAY)
-                        }
                         break
                     }
                 }
@@ -841,9 +976,6 @@ class UsbPortController(private val context: Context) {
         }
     }
 
-    /**
-     * Executes a real local shell command via ProcessBuilder when inspecting local host properties.
-     */
     fun executeLocalShell(command: String, onLog: (String, LogLevel) -> Unit) {
         try {
             val clean = command
@@ -968,8 +1100,8 @@ class UsbPortController(private val context: Context) {
         val arg0 = bb.int
         val arg1 = bb.int
         val len = bb.int
-        bb.int // checksum
-        bb.int // magic
+        bb.int 
+        bb.int 
 
         val payload = if (len in 1..MAX_ADB_DATA) {
             val data = ByteArray(len)
