@@ -72,8 +72,7 @@ import com.example.ui.theme.LocalFontConfig
 
 /**
  * Pure Termux-style Fullscreen CLI Terminal Box.
- * Relies cleanly on parent Scaffold WindowInsets.safeDrawing padding (no duplicate imePadding).
- * Inherits active ThemeDesign (Cyber Neon, Emerald Matrix, Crimson Forge), Dark/Light mode, and FontSize.
+ * Updated for Interactive Shell Mode: Input is always available.
  */
 @Composable
 fun FullscreenCliTerminalScreen(
@@ -125,8 +124,8 @@ fun FullscreenCliTerminalScreen(
         }
     }
 
+    // Bug Fix: Removed `if (uiState.isBusy) return` so user can send inputs to open streams
     fun submitCurrent() {
-        if (uiState.isBusy) return
         historyCursor = -1
         onSubmitCommand(textFieldValue.text)
     }
@@ -187,7 +186,7 @@ fun FullscreenCliTerminalScreen(
             .background(terminalBg)
             .testTag("fullscreen_termux_terminal")
     ) {
-        // Scrollable, copy-selectable CLI output area (never wraps BasicTextField)
+        // Scrollable, copy-selectable CLI output area
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -272,84 +271,77 @@ fun FullscreenCliTerminalScreen(
                     .weight(1f)
                     .defaultMinSize(minHeight = 40.dp)
             ) {
-                if (uiState.isBusy) {
+                // Bug Fix: Removed `isBusy` UI block so input field is always active and visible
+                if (textFieldValue.text.isEmpty()) {
                     Text(
-                        text = "running...",
+                        text = "adb / fastboot command...",
                         fontFamily = FontFamily.Monospace,
-                        fontSize = fontConfig.terminalCmdSp,
+                        fontSize = fontConfig.terminalOutSp,
                         color = hintColor
                     )
-                } else {
-                    if (textFieldValue.text.isEmpty()) {
-                        Text(
-                            text = "adb / fastboot command...",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = fontConfig.terminalOutSp,
-                            color = hintColor
-                        )
-                    }
-                    BasicTextField(
-                        value = textFieldValue,
-                        onValueChange = { next ->
-                            if (next.text.contains('\n')) {
-                                val clean = next.text.replace("\n", "")
-                                historyCursor = -1
-                                textFieldValue = TextFieldValue("", TextRange(0))
-                                onSubmitCommand(clean)
-                            } else {
-                                textFieldValue = next
-                                onTerminalInputChange(next.text)
-                            }
-                        },
-                        singleLine = true,
-                        cursorBrush = SolidColor(promptColor),
-                        textStyle = TextStyle(
-                            color = inputColor,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = fontConfig.terminalCmdSp,
-                            lineHeight = 20.sp
-                        ),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Ascii,
-                            autoCorrectEnabled = false,
-                            imeAction = ImeAction.Send
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onSend = { submitCurrent() },
-                            onDone = { submitCurrent() }
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(focusRequester)
-                            .onPreviewKeyEvent { keyEvent ->
-                                if (keyEvent.type == KeyEventType.KeyDown) {
-                                    when (keyEvent.key) {
-                                        Key.Enter, Key.NumPadEnter -> {
-                                            submitCurrent()
-                                            true
-                                        }
-                                        Key.DirectionUp -> {
-                                            stepHistoryUp()
-                                            true
-                                        }
-                                        Key.DirectionDown -> {
-                                            stepHistoryDown()
-                                            true
-                                        }
-                                        else -> false
-                                    }
-                                } else {
-                                    false
-                                }
-                            }
-                            .testTag("termux_cli_input")
-                    )
                 }
+                BasicTextField(
+                    value = textFieldValue,
+                    onValueChange = { next ->
+                        if (next.text.contains('\n')) {
+                            val clean = next.text.replace("\n", "")
+                            historyCursor = -1
+                            textFieldValue = TextFieldValue("", TextRange(0))
+                            onSubmitCommand(clean)
+                        } else {
+                            textFieldValue = next
+                            onTerminalInputChange(next.text)
+                        }
+                    },
+                    singleLine = true,
+                    cursorBrush = SolidColor(promptColor),
+                    textStyle = TextStyle(
+                        color = inputColor,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = fontConfig.terminalCmdSp,
+                        lineHeight = 20.sp
+                    ),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Ascii,
+                        autoCorrectEnabled = false,
+                        imeAction = ImeAction.Send
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onSend = { submitCurrent() },
+                        onDone = { submitCurrent() }
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester)
+                        .onPreviewKeyEvent { keyEvent ->
+                            if (keyEvent.type == KeyEventType.KeyDown) {
+                                when (keyEvent.key) {
+                                    Key.Enter, Key.NumPadEnter -> {
+                                        submitCurrent()
+                                        true
+                                    }
+                                    Key.DirectionUp -> {
+                                        stepHistoryUp()
+                                        true
+                                    }
+                                    Key.DirectionDown -> {
+                                        stepHistoryDown()
+                                        true
+                                    }
+                                    else -> false
+                                }
+                            } else {
+                                false
+                            }
+                        }
+                        .testTag("termux_cli_input")
+                )
             }
             Spacer(modifier = Modifier.width(2.dp))
+            
+            // Bug Fix: Enabled Send Button regardless of `isBusy` state
             IconButton(
                 onClick = { submitCurrent() },
-                enabled = !uiState.isBusy,
                 modifier = Modifier
                     .size(48.dp)
                     .testTag("termux_send_button")
@@ -357,7 +349,7 @@ fun FullscreenCliTerminalScreen(
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.Send,
                     contentDescription = "Run Command",
-                    tint = if (uiState.isBusy) hintColor else promptColor,
+                    tint = promptColor,
                     modifier = Modifier.size(20.dp)
                 )
             }
